@@ -449,6 +449,7 @@ mod tests {
     fn ekspor_memakai_seluruh_baris_satu_kueri() {
         // Ekspor besar tidak boleh lagi memindai tabel berulang per halaman;
         // ia memakai alir_baris satu kueri berurutan stabil.
+        let _kunci = crate::store::uji_kunci();
         crate::store::uji_isolasi();
         crate::store::conn();
         let t = "UJI_EKSPOR";

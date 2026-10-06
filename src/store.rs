@@ -323,6 +323,11 @@ pub fn page(
 /// seluruh baris berasal dari snapshot yang sama meski sinkronisasi berjalan di
 /// sampingnya.
 pub fn alir_baris(table: &str, mut f: impl FnMut(&Value)) -> rusqlite::Result<()> {
+    // Pastikan basis data dan skemanya sudah dibuat sebelum membuka koneksi
+    // baca-saja. Tanpa ini, ekspor yang menjadi permintaan data pertama (sebelum
+    // ada pembacaan lain) gagal membuka berkas yang belum ada. Kunci hanya
+    // dipegang sesaat di sini, tidak selama baris dialirkan.
+    let _ = conn();
     let path = config::data_dir().join("bmn.sqlite");
     let c = Connection::open_with_flags(
         path,
@@ -342,14 +347,41 @@ pub fn alir_baris(table: &str, mut f: impl FnMut(&Value)) -> rusqlite::Result<()
 /// Arahkan uji ke basis data sementara agar tidak menyentuh cache pengembangan.
 ///
 /// Tanpa ini, uji yang memakai `clear_table` akan menghapus data nyata di `data/`.
+/// Direktori dibuat unik per proses uji supaya proses paralel tidak saling
+/// menimpa, dan dibersihkan lebih dulu agar sisa jalannya sebelumnya tidak
+/// terbaca.
 #[cfg(test)]
 pub fn uji_isolasi() {
     static SEKALI: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     SEKALI.get_or_init(|| {
-        let dir = std::env::temp_dir().join("dasbor-bmn-uji");
+        let unik = format!(
+            "dasbor-bmn-uji-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+        let dir = std::env::temp_dir().join(unik);
+        let _ = std::fs::remove_dir_all(&dir);
         let _ = std::fs::create_dir_all(&dir);
         std::env::set_var("SIMAN_DATA_DIR", &dir);
     });
+}
+
+/// Kunci bersama untuk uji yang menyentuh basis data.
+///
+/// Seluruh uji dalam satu proses berbagi satu berkas SQLite, dan beberapa uji
+/// menghapus seluruh tabel. Tanpa serialisasi, uji yang berjalan paralel saling
+/// menimpa data sehingga hasilnya bergantung waktu. Setiap uji yang menyentuh
+/// basis data harus memegang kunci ini selama berjalan.
+#[cfg(test)]
+pub fn uji_kunci() -> std::sync::MutexGuard<'static, ()> {
+    static KUNCI: OnceLock<Mutex<()>> = OnceLock::new();
+    KUNCI
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
 }
 
 /// Susun halaman kosong saat tabel belum tersinkron.
@@ -476,14 +508,16 @@ mod tests {
         }
     }
 
-    fn siap() {
+    fn siap() -> std::sync::MutexGuard<'static, ()> {
+        let kunci = uji_kunci();
         uji_isolasi();
         conn();
+        kunci
     }
 
     #[test]
     fn buang_demo_dan_tulis_dalam_satu_transaksi() {
-        siap();
+        let _kunci = siap();
         let t = "UJI_TRANSAKSI";
         // Siapkan isi "data contoh" pada tabel lain.
         let _ = replace_table("UJI_CONTOH", &[json!({"kd_brg": "D1"})], &stats(1), "t0");
@@ -500,7 +534,7 @@ mod tests {
 
     #[test]
     fn alir_baris_mengembalikan_seluruh_baris_berurutan() {
-        siap();
+        let _kunci = siap();
         let t = "UJI_ALIR";
         let rows: Vec<Value> = (0..5).map(|i| json!({"kd_brg": format!("K{i}")})).collect();
         replace_table(t, &rows, &stats(5), "t0").unwrap();

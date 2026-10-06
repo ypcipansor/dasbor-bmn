@@ -158,9 +158,11 @@ pub async fn row_count(table: &str) -> Result<i64, SldkError> {
 
 /// Baca jumlah baris dari balasan `getRowCount`.
 ///
-/// Balasan yang tidak memuat field jumlah baris dikembalikan sebagai galat,
-/// bukan nol: nol hanya boleh berasal dari field jumlah yang benar-benar bernilai
-/// nol. Dengan begitu pesan galat berstatus 200 tidak menghapus cache tabel.
+/// Menerima beberapa bentuk balasan yang dikenal gateway: `results` berupa array
+/// objek berisi field jumlah, `results` berupa angka/teks, serta field jumlah di
+/// tingkat atas. Balasan yang tidak memuat field jumlah dikembalikan sebagai
+/// galat, bukan nol: nol hanya boleh berasal dari field jumlah yang benar-benar
+/// bernilai nol, sehingga pesan galat berstatus 200 tidak menghapus cache tabel.
 fn parse_row_count(body: &Value) -> Result<i64, SldkError> {
     fn angka(v: &Value) -> Option<i64> {
         match v {
@@ -169,20 +171,27 @@ fn parse_row_count(body: &Value) -> Result<i64, SldkError> {
             _ => None,
         }
     }
+    const KUNCI: [&str; 6] = ["RCOUNT", "rcount", "ROWCOUNT", "rowcount", "TOTAL", "total"];
 
     // Bentuk nyata: {"results":[{"SKEMA":"DJKN","NAMATABEL":"...","RCOUNT":2186}]}
-    // Angka ada di dalam kunci RCOUNT pada elemen pertama, bukan panjang array.
-    if let Some(first) = body
-        .get("results")
-        .and_then(|r| r.as_array())
-        .and_then(|a| a.first())
-    {
-        for key in ["RCOUNT", "rcount", "ROWCOUNT", "rowcount", "TOTAL", "total"] {
-            if let Some(n) = first.get(key).and_then(angka) {
-                return Ok(n);
+    // Setiap elemen diperiksa, bukan hanya yang pertama.
+    if let Some(arr) = body.get("results").and_then(|r| r.as_array()) {
+        for el in arr {
+            for key in KUNCI {
+                if let Some(n) = el.get(key).and_then(angka) {
+                    return Ok(n);
+                }
             }
         }
+        // Array ada tetapi tak satu pun elemen memuat field jumlah.
+        return Err(SldkError::BadResponse(ringkas(body)));
     }
+
+    // Bentuk ringkas: {"results":12} — angka langsung pada `results`.
+    if let Some(n) = body.get("results").and_then(angka) {
+        return Ok(n);
+    }
+
     let candidates = [
         body.get("RCOUNT"),
         body.get("rcount"),
@@ -364,6 +373,22 @@ mod tests {
     fn bentuk_cadangan_tetap_didukung() {
         assert_eq!(parse_row_count(&json!({"total": 42})).unwrap(), 42);
         assert_eq!(parse_row_count(&json!({"RCOUNT": 7})).unwrap(), 7);
+    }
+
+    #[test]
+    fn hasil_angka_pada_results_didukung() {
+        // Regresi: klien lama menerima {"results":12}; bentuk ini tidak boleh
+        // lagi ditolak karena memuat jumlah yang sah.
+        assert_eq!(parse_row_count(&json!({"results": 12})).unwrap(), 12);
+        assert_eq!(parse_row_count(&json!({"results": "12"})).unwrap(), 12);
+        assert_eq!(parse_row_count(&json!({"results": 0})).unwrap(), 0);
+    }
+
+    #[test]
+    fn elemen_kedua_array_tetap_dibaca() {
+        // Regresi: dulu hanya elemen pertama yang diperiksa.
+        let body = json!({"results": [{"SKEMA": "DJKN"}, {"NAMATABEL": "X", "RCOUNT": 314}]});
+        assert_eq!(parse_row_count(&body).unwrap(), 314);
     }
 
     #[test]

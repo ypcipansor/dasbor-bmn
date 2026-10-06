@@ -7,6 +7,7 @@ async fn main() {
     use dasbor_bmn::auth;
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
+    use std::net::SocketAddr;
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
@@ -30,9 +31,15 @@ async fn main() {
         .await
         .expect("gagal bind alamat");
     println!("dasbor-bmn siap di http://{addr}");
-    axum::serve(listener, app.into_make_service())
-        .await
-        .expect("server berhenti tak terduga");
+    // `into_make_service_with_connect_info` mengisi alamat TCP peer dari kernel.
+    // Gerbang memakainya untuk pembatasan percobaan masuk dan aturan cookie
+    // Secure; header alamat klien tidak dipercaya karena dapat dipalsukan.
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .await
+    .expect("server berhenti tak terduga");
 }
 
 #[cfg(not(feature = "ssr"))]

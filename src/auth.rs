@@ -11,11 +11,12 @@
 #![cfg(feature = "ssr")]
 
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::Request;
+use axum::extract::{ConnectInfo, Request};
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -37,8 +38,19 @@ static PERCOBAAN: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::n
 
 /// Jendela pembatasan percobaan masuk.
 const JENDELA_PERCOBAAN: Duration = Duration::from_secs(5 * 60);
-/// Percobaan gagal maksimum per jendela sebelum alamat dikunci sementara.
+/// Percobaan gagal maksimum per alamat sebelum penundaan dinaikkan.
 const MAKS_PERCOBAAN: u32 = 5;
+/// Batas percobaan gagal seluruh klien sebelum penundaan dinaikkan lagi.
+///
+/// Header alamat klien diisi proxy dan karena itu tidak dapat dipercaya, jadi
+/// penyerang dapat memalsukan alamat baru pada tiap percobaan. Batas global ini
+/// menutup lubang itu: setelah jendela penuh, setiap percobaan salah ditunda
+/// makin lama, berapa pun alamat yang diklaim (CWE-290/CWE-307).
+const MAKS_GLOBAL: u32 = 30;
+/// Penundaan dasar tiap percobaan salah.
+const TUNDA_DASAR_MS: u64 = 300;
+/// Batas atas penundaan satu percobaan salah (detik).
+const TUNDA_MAKS_MS: u64 = 30_000;
 
 fn sessions() -> &'static Mutex<HashMap<String, Instant>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
@@ -48,34 +60,43 @@ fn percobaan() -> &'static Mutex<HashMap<String, (u32, Instant)>> {
     PERCOBAAN.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Kunci pembatasan: alamat klien dari header proxy, atau "lokal".
+/// Jumlah percobaan gagal seluruh klien dalam jendela berjalan.
+static GLOBAL: OnceLock<Mutex<(u32, Instant)>> = OnceLock::new();
+
+fn global() -> &'static Mutex<(u32, Instant)> {
+    GLOBAL.get_or_init(|| Mutex::new((0, Instant::now())))
+}
+
+/// Apakah alamat berasal dari jaringan lokal (loopback atau privat).
+fn alamat_lokal(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// Kunci pembatasan: alamat TCP peer yang sebenarnya.
+///
+/// Header seperti `X-Forwarded-For` **tidak** dipakai karena datang dari klien
+/// dan mudah dipalsukan; memakainya membuat penyerang mendapat jatah percobaan
+/// baru pada tiap permintaan (CWE-290). `ConnectInfo` diisi kernel, bukan header.
 fn kunci_klien(req: &Request) -> String {
-    for nama in ["x-forwarded-for", "x-real-ip"] {
-        if let Some(v) = req.headers().get(nama).and_then(|v| v.to_str().ok()) {
-            let first = v.split(',').next().unwrap_or("").trim();
-            if !first.is_empty() {
-                return first.to_string();
-            }
-        }
-    }
-    "lokal".to_string()
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip().to_string())
+        .unwrap_or_else(|| "tanpa-alamat".to_string())
 }
 
-/// Berapa detik lagi alamat ini harus menunggu sebelum boleh mencoba lagi.
-fn sisa_tunggu(kunci: &str) -> Option<u64> {
-    let mut p = percobaan().lock().unwrap();
-    let now = Instant::now();
-    p.retain(|_, (_, until)| *until > now);
-    let (jumlah, until) = *p.get(kunci)?;
-    if jumlah >= MAKS_PERCOBAAN && until > now {
-        Some((until - now).as_secs().max(1))
-    } else {
-        None
-    }
+/// Apakah permintaan datang dari jaringan lokal (untuk aturan cookie Secure).
+fn permintaan_lokal(req: &Request) -> bool {
+    req.extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| alamat_lokal(&ci.0.ip()))
+        .unwrap_or(false)
 }
 
-/// Catat satu percobaan gagal; kembalikan sisa tunggu bila sudah terkunci.
-fn catat_gagal(kunci: &str) -> Option<u64> {
+/// Hitung satu percobaan gagal per alamat; kembalikan jumlahnya di jendela ini.
+fn catat_gagal(kunci: &str) -> u32 {
     let mut p = percobaan().lock().unwrap();
     let now = Instant::now();
     p.retain(|_, (_, until)| *until > now);
@@ -84,16 +105,45 @@ fn catat_gagal(kunci: &str) -> Option<u64> {
         .or_insert((0, now + JENDELA_PERCOBAAN));
     entri.0 += 1;
     entri.1 = now + JENDELA_PERCOBAAN;
-    if entri.0 >= MAKS_PERCOBAAN {
-        Some((entri.1 - now).as_secs().max(1))
-    } else {
-        None
+    entri.0
+}
+
+/// Hitung satu percobaan gagal global; kembalikan jumlahnya di jendela ini.
+fn catat_gagal_global() -> u32 {
+    let mut g = global().lock().unwrap();
+    let now = Instant::now();
+    if g.1 <= now {
+        *g = (0, now + JENDELA_PERCOBAAN);
     }
+    g.0 += 1;
+    g.0
+}
+
+/// Lama penundaan untuk percobaan salah ke-`n`.
+///
+/// Menaikkan penundaan secara berlipat setelah ambang terlampaui, lalu berhenti
+/// di `TUNDA_MAKS_MS`. Kata sandi yang benar tidak pernah ditunda, sehingga
+/// operator tidak dapat terkunci oleh percobaan orang lain (CWE-400), sementara
+/// laju tebak-tebakan tetap dibatasi ketat.
+fn tunda_percobaan(n: u32) -> Duration {
+    let ambang = MAKS_PERCOBAAN.min(MAKS_GLOBAL);
+    if n <= ambang {
+        return Duration::from_millis(TUNDA_DASAR_MS);
+    }
+    let langkah = (n - ambang).min(10);
+    let ms = TUNDA_DASAR_MS
+        .saturating_mul(1u64 << langkah)
+        .min(TUNDA_MAKS_MS);
+    Duration::from_millis(ms)
 }
 
 /// Hapus catatan percobaan setelah masuk berhasil.
 fn hapus_percobaan(kunci: &str) {
     percobaan().lock().unwrap().remove(kunci);
+    // Masuk yang sah mengosongkan penghitung global agar operator tidak ikut
+    // terdampak oleh percobaan orang lain.
+    let now = Instant::now();
+    *global().lock().unwrap() = (0, now + JENDELA_PERCOBAAN);
 }
 
 /// Baca byte acak dari sistem operasi.
@@ -230,12 +280,16 @@ fn permintaan_https(req: &Request) -> bool {
 
 /// Apakah cookie sesi harus ditandai `Secure`.
 ///
-/// Gagal-tertutup: `Secure` dipasang secara bawaan, dan hanya dilepas bila
-/// permintaan jelas berasal dari host lokal untuk pengembangan. Dengan begitu
-/// sesi tidak pernah dapat dikirim lewat HTTP biasa hanya karena proxy lupa
-/// mengirim `x-forwarded-proto` (CWE-614).
+/// Gagal-tertutup: `Secure` dipasang secara bawaan dan hanya dilepas untuk
+/// pengembangan lokal. Dua syarat harus terpenuhi: koneksi TCP berasal dari
+/// jaringan lokal, dan nama host persis host lokal. Pencocokan awalan tidak
+/// dipakai karena host seperti `localhost.example.com` dimiliki pihak lain dan
+/// akan menerima cookie sesi yang dapat dikirim lewat HTTP biasa (CWE-614).
 fn pakai_secure(req: &Request) -> bool {
     if permintaan_https(req) {
+        return true;
+    }
+    if !permintaan_lokal(req) {
         return true;
     }
     let host = req
@@ -243,8 +297,13 @@ fn pakai_secure(req: &Request) -> bool {
         .get(header::HOST)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
-    let lokal =
-        host.starts_with("localhost") || host.starts_with("127.0.0.1") || host.starts_with("[::1]");
+    // Ambil nama host tanpa port; IPv6 ditulis dalam kurung siku.
+    let nama = if let Some(sisa) = host.strip_prefix('[') {
+        sisa.split(']').next().unwrap_or("")
+    } else {
+        host.split(':').next().unwrap_or("")
+    };
+    let lokal = matches!(nama, "localhost" | "127.0.0.1" | "::1");
     !lokal
 }
 
@@ -406,11 +465,6 @@ fn redirect_ke(lokasi: &str, cookie: Option<String>) -> Response {
 pub async fn login(req: Request) -> Response {
     let https = pakai_secure(&req);
     let kunci = kunci_klien(&req);
-    if let Some(sisa) = sisa_tunggu(&kunci) {
-        return halaman_galat(&format!(
-            "Terlalu banyak percobaan. Coba lagi dalam {sisa} detik."
-        ));
-    }
     let body = match axum::body::to_bytes(req.into_body(), 8 * 1024).await {
         Ok(b) => b,
         Err(_) => return halaman_galat("Permintaan tidak terbaca."),
@@ -420,13 +474,11 @@ pub async fn login(req: Request) -> Response {
         Err(_) => return halaman_galat("Permintaan tidak terbaca."),
     };
     if !cocok(&form.password) {
-        // Perlambat sedikit agar percobaan berturut-turut tidak gratis.
-        tokio::time::sleep(Duration::from_millis(300)).await;
-        if let Some(sisa) = catat_gagal(&kunci) {
-            return halaman_galat(&format!(
-                "Terlalu banyak percobaan. Coba lagi dalam {sisa} detik."
-            ));
-        }
+        // Percobaan salah dihitung per alamat dan global, lalu ditunda makin
+        // lama. Kata sandi yang benar tidak pernah ditunda, jadi operator tidak
+        // dapat dikunci oleh percobaan orang lain.
+        let n = catat_gagal_global().max(catat_gagal(&kunci));
+        tokio::time::sleep(tunda_percobaan(n)).await;
         return halaman_galat("Kata sandi salah.");
     }
     hapus_percobaan(&kunci);
@@ -488,41 +540,112 @@ mod tests {
     }
 
     #[test]
-    fn pembatasan_percobaan_mengunci_setelah_batas() {
+    fn pembatasan_percobaan_menaikkan_penundaan() {
         let kunci = "uji-pembatas";
         hapus_percobaan(kunci);
-        for i in 0..MAKS_PERCOBAAN {
-            let hasil = catat_gagal(kunci);
-            if i + 1 < MAKS_PERCOBAAN {
-                assert!(hasil.is_none(), "belum boleh terkunci pada percobaan {i}");
-            } else {
-                assert!(hasil.is_some(), "harus terkunci pada percobaan terakhir");
-            }
+        for i in 1..=MAKS_PERCOBAAN {
+            let n = catat_gagal(kunci);
+            assert_eq!(n, i, "penghitung per alamat bertambah");
         }
-        assert!(sisa_tunggu(kunci).is_some());
-        // Masuk berhasil menghapus catatan sehingga tidak lagi terkunci.
+        // Setelah ambang, penundaan naik berlipat dan berhenti di batas atas.
+        assert!(tunda_percobaan(MAKS_PERCOBAAN + 1) > tunda_percobaan(MAKS_PERCOBAAN));
+        assert!(tunda_percobaan(MAKS_PERCOBAAN + 2) > tunda_percobaan(MAKS_PERCOBAAN + 1));
+        assert_eq!(
+            tunda_percobaan(MAKS_PERCOBAAN + 50),
+            Duration::from_millis(TUNDA_MAKS_MS)
+        );
+        // Masuk berhasil menghapus catatan sehingga tidak lagi terdampak.
         hapus_percobaan(kunci);
-        assert!(sisa_tunggu(kunci).is_none());
+        assert_eq!(catat_gagal(kunci), 1, "penghitung mulai dari awal lagi");
+    }
+
+    #[test]
+    fn batas_global_menghitung_walau_alamat_berbeda() {
+        // Kosongkan penghitung global lebih dulu.
+        *global().lock().unwrap() = (0, Instant::now() + JENDELA_PERCOBAAN);
+        assert_eq!(catat_gagal_global(), 1);
+        // Percobaan dari banyak "alamat" tetap menaikkan penghitung global.
+        for _ in 0..(MAKS_GLOBAL - 2) {
+            catat_gagal_global();
+        }
+        assert_eq!(catat_gagal_global(), MAKS_GLOBAL);
+        assert!(tunda_percobaan(MAKS_GLOBAL) > tunda_percobaan(MAKS_PERCOBAAN));
+        // Masuk yang sah mengosongkan penghitung.
+        hapus_percobaan("alamat-apa-saja");
+        assert_eq!(catat_gagal_global(), 1);
+    }
+
+    #[test]
+    fn tunda_dasar_di_bawah_ambang() {
+        for n in 1..=MAKS_PERCOBAAN {
+            assert_eq!(tunda_percobaan(n), Duration::from_millis(TUNDA_DASAR_MS));
+        }
     }
 
     #[test]
     fn cookie_secure_kecuali_host_lokal() {
-        let buat = |host: &str, proto: Option<&str>| {
+        let buat = |peer: &str, host: &str, proto: Option<&str>| {
             let mut b = Request::builder()
                 .uri("/api/login")
                 .header(header::HOST, host);
             if let Some(p) = proto {
                 b = b.header("x-forwarded-proto", p);
             }
-            pakai_secure(&b.body(Body::empty()).unwrap())
+            let mut req = b.body(Body::empty()).unwrap();
+            let alamat: SocketAddr = peer.parse().unwrap();
+            req.extensions_mut().insert(ConnectInfo(alamat));
+            pakai_secure(&req)
         };
-        // Produksi tanpa header proxy: tetap Secure.
-        assert!(buat("dasbor.example.go.id", None));
-        assert!(buat("dasbor.example.go.id", Some("http")));
-        // Proxy menyatakan https.
-        assert!(buat("dasbor.example.go.id", Some("https")));
-        // Host lokal untuk pengembangan boleh tanpa Secure.
-        assert!(!buat("localhost:12000", None));
-        assert!(!buat("127.0.0.1:12000", None));
+        // Peer publik: selalu Secure, apa pun nama host dan header proxy.
+        assert!(buat("203.0.113.7:5000", "dasbor.example.go.id", None));
+        assert!(buat(
+            "203.0.113.7:5000",
+            "dasbor.example.go.id",
+            Some("http")
+        ));
+        assert!(buat(
+            "203.0.113.7:5000",
+            "dasbor.example.go.id",
+            Some("https")
+        ));
+        // Peer publik yang memalsukan Host lokal tetap Secure.
+        assert!(buat("203.0.113.7:5000", "localhost:12000", None));
+        // Host berawalan lokal tapi bukan host lokal: tetap Secure.
+        assert!(buat("127.0.0.1:12000", "localhost.example.com", None));
+        assert!(buat("127.0.0.1:12000", "127.0.0.1.example.com", None));
+        // Host lokal sungguhan dari peer lokal boleh tanpa Secure (pengembangan).
+        assert!(!buat("127.0.0.1:12000", "localhost:12000", None));
+        assert!(!buat("127.0.0.1:12000", "127.0.0.1:12000", None));
+        assert!(!buat("[::1]:12000", "[::1]:12000", None));
+        // Peer lokal tapi host bukan lokal (uji lewat terowongan) tetap Secure.
+        assert!(buat("127.0.0.1:12000", "dasbor.example.go.id", None));
+    }
+
+    #[test]
+    fn kunci_pembatasan_memakai_alamat_soket_bukan_header() {
+        let buat = |peer: &str, xff: Option<&str>| {
+            let mut b = Request::builder().uri("/api/login");
+            if let Some(v) = xff {
+                b = b.header("x-forwarded-for", v);
+            }
+            let mut req = b.body(Body::empty()).unwrap();
+            let alamat: SocketAddr = peer.parse().unwrap();
+            req.extensions_mut().insert(ConnectInfo(alamat));
+            kunci_klien(&req)
+        };
+        // Header yang dipalsukan tidak mengubah kunci: alamat soket yang dipakai.
+        assert_eq!(buat("198.51.100.9:4000", Some("1.2.3.4")), "198.51.100.9");
+        assert_eq!(buat("198.51.100.9:4000", Some("9.9.9.9")), "198.51.100.9");
+        assert_eq!(buat("198.51.100.9:4000", None), "198.51.100.9");
+    }
+
+    #[test]
+    fn alamat_lokal_dikenali() {
+        assert!(alamat_lokal(&"127.0.0.1".parse().unwrap()));
+        assert!(alamat_lokal(&"10.0.0.5".parse().unwrap()));
+        assert!(alamat_lokal(&"192.168.1.10".parse().unwrap()));
+        assert!(alamat_lokal(&"::1".parse().unwrap()));
+        assert!(!alamat_lokal(&"203.0.113.7".parse().unwrap()));
+        assert!(!alamat_lokal(&"8.8.8.8".parse().unwrap()));
     }
 }

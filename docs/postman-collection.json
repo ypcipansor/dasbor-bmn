@@ -734,6 +734,18 @@
 		{
 			"key": "ba_key",
 			"value": ""
+		},
+		{
+			"key": "client_id",
+			"value": ""
+		},
+		{
+			"key": "client_secret",
+			"value": ""
+		},
+		{
+			"key": "grant_type",
+			"value": "client_credentials"
 		}
 	]
 }
