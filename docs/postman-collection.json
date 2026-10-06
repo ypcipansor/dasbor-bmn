@@ -1,0 +1,739 @@
+{
+	"info": {
+		"_postman_id": "7093b50d-567e-4548-9cd5-c22c44b59de5",
+		"name": "API Siman v2.0 - Kejaksaan RI",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "30993580"
+	},
+	"item": [
+		{
+			"name": "getToken",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"var data = pm.response.json();\r",
+							"pm.collectionVariables.set(\"token\", data.access_token);"
+						],
+						"type": "text/javascript",
+						"packages": {},
+						"requests": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "noauth"
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "client_id",
+							"value": "simanv2.kejagung",
+							"type": "text"
+						},
+						{
+							"key": "client_secret",
+							"value": "e5f60b3c9b8d49a2b84032b5f994d242",
+							"type": "text"
+						},
+						{
+							"key": "grant_type",
+							"value": "client_credentials",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "https://sso.kemenkeu.go.id/connect/token",
+					"protocol": "https",
+					"host": [
+						"sso",
+						"kemenkeu",
+						"go",
+						"id"
+					],
+					"path": [
+						"connect",
+						"token"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getRowCount",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getRowCount/{{ba_key}}/SIMAN2_M_ASET_ALAT_BESAR",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getRowCount",
+						"{{ba_key}}",
+						"SIMAN2_M_ASET_ALAT_BESAR"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetAlatBesar",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetAlatBesar",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetAlatBesar"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetAngkutanBermotor",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetAngkutanBermotor",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetAngkutanBermotor"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetAlatPersenjataan",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetAlatPersenjataan",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetAlatPersenjataan"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetTakBerwujud",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetTakBerwujud",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetTakBerwujud"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetBangunanAir",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetBangunanAir",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetBangunanAir"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetGedungBangunan",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetGedungBangunan",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetGedungBangunan"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetInstalasiJaringan",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetInstalasiJaringan",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetInstalasiJaringan"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetJalandanJembatan",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetJalandanJembatan",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetJalandanJembatan"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetNonTIK",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetNonTIK",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetNonTIK"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetRumah",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetRumah",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetRumah"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetTanah",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetTanah",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetTanah"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetTetapLainnya",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetTanah",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetTanah"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetKDP",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetKDP",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetKDP"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetKhususTIK",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetTanah",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetTanah"
+					]
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "getAsetTetapRenovasi",
+			"request": {
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "urlencoded",
+					"urlencoded": [
+						{
+							"key": "BA_KEY",
+							"value": "{{ba_key}}",
+							"type": "text"
+						},
+						{
+							"key": "ID_1",
+							"value": "1",
+							"type": "text"
+						},
+						{
+							"key": "ID_2",
+							"value": "1000",
+							"type": "text"
+						}
+					]
+				},
+				"url": {
+					"raw": "{{base_url}}/gateway/SLDKSimanKL/2.0/getAsetTetapRenovasi",
+					"host": [
+						"{{base_url}}"
+					],
+					"path": [
+						"gateway",
+						"SLDKSimanKL",
+						"2.0",
+						"getAsetTetapRenovasi"
+					]
+				}
+			},
+			"response": []
+		}
+	],
+	"auth": {
+		"type": "bearer",
+		"bearer": [
+			{
+				"key": "token",
+				"value": "{{token}}",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"requests": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "token",
+			"value": ""
+		},
+		{
+			"key": "base_url",
+			"value": ""
+		},
+		{
+			"key": "ba_key",
+			"value": ""
+		}
+	]
+}
