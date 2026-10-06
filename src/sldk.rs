@@ -129,7 +129,26 @@ pub async fn row_count(table: &str) -> Result<i64, SldkError> {
 }
 
 fn parse_row_count(body: &Value) -> i64 {
+    // Bentuk nyata: {"results":[{"SKEMA":"DJKN","NAMATABEL":"...","RCOUNT":2186}]}
+    // Angka ada di dalam kunci RCOUNT pada elemen pertama, bukan panjang array.
+    if let Some(first) = body.get("results").and_then(|r| r.as_array()).and_then(|a| a.first()) {
+        for key in ["RCOUNT", "rcount", "ROWCOUNT", "rowcount", "TOTAL", "total"] {
+            if let Some(n) = first.get(key) {
+                match n {
+                    Value::Number(n) => return n.as_i64().unwrap_or(0),
+                    Value::String(s) => {
+                        if let Ok(n) = s.trim().parse::<i64>() {
+                            return n;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
     let candidates = [
+        body.get("RCOUNT"),
+        body.get("rcount"),
         body.get("results"),
         body.get("result"),
         body.get("total"),
@@ -143,7 +162,23 @@ fn parse_row_count(body: &Value) -> i64 {
                     return n;
                 }
             }
-            Value::Array(a) => return a.len() as i64,
+            Value::Array(a) => {
+                for el in a {
+                    for key in ["RCOUNT", "rcount", "TOTAL", "total", "count"] {
+                        if let Some(n) = el.get(key) {
+                            match n {
+                                Value::Number(n) => return n.as_i64().unwrap_or(0),
+                                Value::String(s) => {
+                                    if let Ok(n) = s.trim().parse::<i64>() {
+                                        return n;
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -221,3 +256,51 @@ pub async fn health() -> Result<(bool, Option<String>), ()> {
         Err(e) => Ok((false, Some(e.user_message()))),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::parse_row_count;
+    use serde_json::json;
+
+    #[test]
+    fn membaca_rcount_dari_pembungkus_results() {
+        // Bentuk balasan nyata dari getRowCount.
+        let body = json!({
+            "results": [{
+                "SKEMA": "DJKN",
+                "NAMATABEL": "SIMAN2_M_ASET_TANAH",
+                "TANGGAL": "2026-10-04 15:00:32.2166667",
+                "RCOUNT": 2186
+            }]
+        });
+        assert_eq!(parse_row_count(&body), 2186);
+    }
+
+    #[test]
+    fn rcount_nol_tetap_dibaca_nol() {
+        let body = json!({"results": [{"RCOUNT": 0}]});
+        assert_eq!(parse_row_count(&body), 0);
+    }
+
+    #[test]
+    fn rcount_sebagai_teks() {
+        let body = json!({"results": [{"RCOUNT": "74429"}]});
+        assert_eq!(parse_row_count(&body), 74429);
+    }
+
+    #[test]
+    fn panjang_array_bukan_jumlah_baris() {
+        // Regresi: dulu panjang array (1) dipakai sebagai jumlah baris.
+        let body = json!({"results": [{"RCOUNT": 4264}, {"RCOUNT": 999}]});
+        assert_eq!(parse_row_count(&body), 4264);
+    }
+
+    #[test]
+    fn bentuk_cadangan_tetap_didukung() {
+        assert_eq!(parse_row_count(&json!({"total": 42})), 42);
+        assert_eq!(parse_row_count(&json!({"RCOUNT": 7})), 7);
+        assert_eq!(parse_row_count(&json!({"results": 12})), 12);
+        assert_eq!(parse_row_count(&json!({"tidak_ada": 1})), 0);
+    }
+}
+
