@@ -204,13 +204,11 @@ pub async fn sync_table(table: String) -> Result<SyncStatus, ServerFnError> {
 
         // Sumber kosong tidak perlu diambil sama sekali.
         if total <= 0 {
-            if demo::is_demo() {
-                demo::hapus();
-            }
             let stats = analytics::TableStats::default();
-            store::replace_table(&table, &[], &stats, &now)
+            // Satu transaksi: buang data contoh (bila ada) sekaligus ganti tabel
+            // dan tandai mode langsung, agar kegagalan tidak meninggalkan dasbor kosong.
+            store::replace_table_transaksional(&table, &[], &stats, &now, demo::is_demo())
                 .map_err(|e| ServerFnError::new(e.to_string()))?;
-            store::set_meta("mode", "live").ok();
             return Ok(SyncStatus {
                 table: table.clone(),
                 label,
@@ -247,14 +245,11 @@ pub async fn sync_table(table: String) -> Result<SyncStatus, ServerFnError> {
 
         // Data contoh dibersihkan sebelum data langsung pertama menggantikannya,
         // agar kategori yang belum tersinkron tidak ikut berlabel langsung.
-        if demo::is_demo() {
-            demo::hapus();
-        }
-
+        // Penghapusan dan penulisan berbagi satu transaksi supaya kegagalan
+        // penulisan tidak meninggalkan dasbor kosong tanpa data contoh.
         let stats = analytics::aggregate(&rows);
-        store::replace_table(&table, &rows, &stats, &now)
+        store::replace_table_transaksional(&table, &rows, &stats, &now, demo::is_demo())
             .map_err(|e| ServerFnError::new(e.to_string()))?;
-        store::set_meta("mode", "live").ok();
         Ok(SyncStatus {
             table: table.clone(),
             label,
@@ -382,28 +377,23 @@ pub async fn export_csv(table: String) -> Result<String, ServerFnError> {
         );
         out.push('\n');
 
-        // Seluruh baris diekspor lewat beberapa halaman, bukan hanya 100.000 pertama.
-        const HALAMAN: i64 = 10_000;
-        let mut halaman = 1i64;
-        loop {
-            let (rows, total) = store::page(&table, &columns, halaman, HALAMAN, "", None, "asc");
-            if rows.is_empty() {
-                break;
-            }
-            for r in &rows {
-                let line: Vec<String> = r
-                    .values
-                    .iter()
-                    .map(|v| format!("\"{}\"", amankan_sel(v).replace('"', "\"\"")))
-                    .collect();
-                out.push_str(&line.join(","));
-                out.push('\n');
-            }
-            if halaman * HALAMAN >= total {
-                break;
-            }
-            halaman += 1;
-        }
+        // Satu kueri berurutan stabil dari koneksi baca-saja tersendiri: seluruh
+        // baris berasal dari snapshot yang sama dan tabel tidak dipindai berulang.
+        store::alir_baris(&table, |v| {
+            let line: Vec<String> = columns
+                .iter()
+                .map(|c| {
+                    let raw = v
+                        .get(&c.name)
+                        .map(crate::model::cell_to_string)
+                        .unwrap_or_default();
+                    format!("\"{}\"", amankan_sel(&raw).replace('"', "\"\""))
+                })
+                .collect();
+            out.push_str(&line.join(","));
+            out.push('\n');
+        })
+        .map_err(|e| ServerFnError::new(e.to_string()))?;
         Ok(out)
     }
     #[cfg(not(feature = "ssr"))]
@@ -453,5 +443,23 @@ mod tests {
         assert_eq!(amankan_sel(""), "");
         assert_eq!(amankan_sel("123"), "123");
         assert_eq!(amankan_sel("A2"), "A2");
+    }
+
+    #[test]
+    fn ekspor_memakai_seluruh_baris_satu_kueri() {
+        // Ekspor besar tidak boleh lagi memindai tabel berulang per halaman;
+        // ia memakai alir_baris satu kueri berurutan stabil.
+        crate::store::uji_isolasi();
+        crate::store::conn();
+        let t = "UJI_EKSPOR";
+        let rows: Vec<serde_json::Value> = (0..25)
+            .map(|i| serde_json::json!({"kd_brg": format!("K{i}"), "rph_aset": i}))
+            .collect();
+        let stats = crate::analytics::aggregate(&rows);
+        crate::store::replace_table(t, &rows, &stats, "t0").unwrap();
+
+        let mut n = 0usize;
+        crate::store::alir_baris(t, |_| n += 1).unwrap();
+        assert_eq!(n, 25, "seluruh baris terbaca dalam sekali alir");
     }
 }

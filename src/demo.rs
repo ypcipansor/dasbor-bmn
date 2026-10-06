@@ -135,17 +135,6 @@ pub fn seed() {
     let _ = crate::store::set_meta("mode", "demo");
 }
 
-/// Buang seluruh baris dan metadata data contoh.
-///
-/// Dipanggil sebelum data langsung pertama masuk agar kategori yang belum
-/// tersinkron tidak pernah tercampur dengan data contoh di bawah label
-/// "Data langsung".
-pub fn hapus() {
-    for t in catalog::TABLES {
-        let _ = crate::store::clear_table(t.table);
-    }
-}
-
 /// Apakah basis data saat ini berisi data contoh.
 pub fn is_demo() -> bool {
     crate::store::get_meta("mode").as_deref() == Some("demo")

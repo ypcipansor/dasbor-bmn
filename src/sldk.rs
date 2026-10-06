@@ -146,14 +146,30 @@ pub async fn row_count(table: &str) -> Result<i64, SldkError> {
         .await
         .map_err(|e| SldkError::Http(e.to_string()))?;
     let status = resp.status();
+    if !status.is_success() {
+        return Err(SldkError::Http(format!("HTTP {status}")));
+    }
     let body: Value = resp
         .json()
         .await
         .map_err(|e| SldkError::BadResponse(format!("{status}: {e}")))?;
-    Ok(parse_row_count(&body))
+    parse_row_count(&body)
 }
 
-fn parse_row_count(body: &Value) -> i64 {
+/// Baca jumlah baris dari balasan `getRowCount`.
+///
+/// Balasan yang tidak memuat field jumlah baris dikembalikan sebagai galat,
+/// bukan nol: nol hanya boleh berasal dari field jumlah yang benar-benar bernilai
+/// nol. Dengan begitu pesan galat berstatus 200 tidak menghapus cache tabel.
+fn parse_row_count(body: &Value) -> Result<i64, SldkError> {
+    fn angka(v: &Value) -> Option<i64> {
+        match v {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => s.trim().parse::<i64>().ok(),
+            _ => None,
+        }
+    }
+
     // Bentuk nyata: {"results":[{"SKEMA":"DJKN","NAMATABEL":"...","RCOUNT":2186}]}
     // Angka ada di dalam kunci RCOUNT pada elemen pertama, bukan panjang array.
     if let Some(first) = body
@@ -162,56 +178,23 @@ fn parse_row_count(body: &Value) -> i64 {
         .and_then(|a| a.first())
     {
         for key in ["RCOUNT", "rcount", "ROWCOUNT", "rowcount", "TOTAL", "total"] {
-            if let Some(n) = first.get(key) {
-                match n {
-                    Value::Number(n) => return n.as_i64().unwrap_or(0),
-                    Value::String(s) => {
-                        if let Ok(n) = s.trim().parse::<i64>() {
-                            return n;
-                        }
-                    }
-                    _ => {}
-                }
+            if let Some(n) = first.get(key).and_then(angka) {
+                return Ok(n);
             }
         }
     }
     let candidates = [
         body.get("RCOUNT"),
         body.get("rcount"),
-        body.get("results"),
-        body.get("result"),
         body.get("total"),
         body.get("count"),
     ];
     for c in candidates.into_iter().flatten() {
-        match c {
-            Value::Number(n) => return n.as_i64().unwrap_or(0),
-            Value::String(s) => {
-                if let Ok(n) = s.trim().parse::<i64>() {
-                    return n;
-                }
-            }
-            Value::Array(a) => {
-                for el in a {
-                    for key in ["RCOUNT", "rcount", "TOTAL", "total", "count"] {
-                        if let Some(n) = el.get(key) {
-                            match n {
-                                Value::Number(n) => return n.as_i64().unwrap_or(0),
-                                Value::String(s) => {
-                                    if let Ok(n) = s.trim().parse::<i64>() {
-                                        return n;
-                                    }
-                                }
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-            _ => {}
+        if let Some(n) = angka(c) {
+            return Ok(n);
         }
     }
-    0
+    Err(SldkError::BadResponse(ringkas(body)))
 }
 
 /// Ambil sekumpulan baris dari satu resource aset.
@@ -355,34 +338,41 @@ mod tests {
                 "RCOUNT": 2186
             }]
         });
-        assert_eq!(parse_row_count(&body), 2186);
+        assert_eq!(parse_row_count(&body).unwrap(), 2186);
     }
 
     #[test]
     fn rcount_nol_tetap_dibaca_nol() {
         let body = json!({"results": [{"RCOUNT": 0}]});
-        assert_eq!(parse_row_count(&body), 0);
+        assert_eq!(parse_row_count(&body).unwrap(), 0);
     }
 
     #[test]
     fn rcount_sebagai_teks() {
         let body = json!({"results": [{"RCOUNT": "74429"}]});
-        assert_eq!(parse_row_count(&body), 74429);
+        assert_eq!(parse_row_count(&body).unwrap(), 74429);
     }
 
     #[test]
     fn panjang_array_bukan_jumlah_baris() {
         // Regresi: dulu panjang array (1) dipakai sebagai jumlah baris.
         let body = json!({"results": [{"RCOUNT": 4264}, {"RCOUNT": 999}]});
-        assert_eq!(parse_row_count(&body), 4264);
+        assert_eq!(parse_row_count(&body).unwrap(), 4264);
     }
 
     #[test]
     fn bentuk_cadangan_tetap_didukung() {
-        assert_eq!(parse_row_count(&json!({"total": 42})), 42);
-        assert_eq!(parse_row_count(&json!({"RCOUNT": 7})), 7);
-        assert_eq!(parse_row_count(&json!({"results": 12})), 12);
-        assert_eq!(parse_row_count(&json!({"tidak_ada": 1})), 0);
+        assert_eq!(parse_row_count(&json!({"total": 42})).unwrap(), 42);
+        assert_eq!(parse_row_count(&json!({"RCOUNT": 7})).unwrap(), 7);
+    }
+
+    #[test]
+    fn balasan_tak_dikenal_menjadi_galat() {
+        // Regresi: pesan galat berstatus 200 tidak boleh dianggap sumber kosong.
+        let body = json!({"error": "temporarily unavailable"});
+        assert!(parse_row_count(&body).is_err());
+        // Array polos tanpa field jumlah juga bukan nol yang sah.
+        assert!(parse_row_count(&json!({"results": [{"SKEMA": "DJKN"}]})).is_err());
     }
 
     use super::{extract_rows, Beberapa};

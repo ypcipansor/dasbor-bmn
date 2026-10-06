@@ -64,8 +64,29 @@ pub fn replace_table(
     stats: &TableStats,
     synced_at: &str,
 ) -> rusqlite::Result<()> {
+    replace_table_transaksional(table, rows, stats, synced_at, false)
+}
+
+/// Ganti isi satu tabel dan, bila diminta, buang seluruh data contoh lebih dulu
+/// dalam satu transaksi yang sama.
+///
+/// Penggabungan ini penting: bila penghapusan data contoh dan penulisan data
+/// langsung dipisah, kegagalan penulisan akan meninggalkan dasbor kosong tanpa
+/// jalan kembali ke data contoh. Karena satu transaksi, kegagalan apa pun
+/// membatalkan keduanya sehingga isi lama (termasuk data contoh) tetap utuh.
+pub fn replace_table_transaksional(
+    table: &str,
+    rows: &[Value],
+    stats: &TableStats,
+    synced_at: &str,
+    buang_demo: bool,
+) -> rusqlite::Result<()> {
     let mut c = conn().lock().unwrap();
     let tx = c.transaction()?;
+    if buang_demo {
+        tx.execute("DELETE FROM assets", [])?;
+        tx.execute("DELETE FROM sync_meta", [])?;
+    }
     tx.execute("DELETE FROM assets WHERE table_name = ?1", params![table])?;
     {
         let mut stmt = tx.prepare(
@@ -94,6 +115,13 @@ pub fn replace_table(
             synced_at
         ],
     )?;
+    if buang_demo {
+        tx.execute(
+            "INSERT INTO app_meta (key, value) VALUES ('mode', 'live')
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [],
+        )?;
+    }
     tx.commit()
 }
 
@@ -287,6 +315,43 @@ pub fn page(
     (rows, filtered)
 }
 
+/// Iterasi seluruh baris satu tabel dalam urutan kunci yang stabil.
+///
+/// Dipakai untuk ekspor besar. Berbeda dari [`page`], fungsi ini memakai koneksi
+/// baca-saja tersendiri sehingga tidak menahan mutex basis data utama dan tidak
+/// membaca ulang seluruh tabel pada tiap halaman. Kueri berjalan satu kali, jadi
+/// seluruh baris berasal dari snapshot yang sama meski sinkronisasi berjalan di
+/// sampingnya.
+pub fn alir_baris(table: &str, mut f: impl FnMut(&Value)) -> rusqlite::Result<()> {
+    let path = config::data_dir().join("bmn.sqlite");
+    let c = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    let mut stmt = c.prepare("SELECT data FROM assets WHERE table_name = ?1 ORDER BY row_key")?;
+    let mut rows = stmt.query(params![table])?;
+    while let Some(r) = rows.next()? {
+        let s: String = r.get(0)?;
+        if let Ok(v) = serde_json::from_str::<Value>(&s) {
+            f(&v);
+        }
+    }
+    Ok(())
+}
+
+/// Arahkan uji ke basis data sementara agar tidak menyentuh cache pengembangan.
+///
+/// Tanpa ini, uji yang memakai `clear_table` akan menghapus data nyata di `data/`.
+#[cfg(test)]
+pub fn uji_isolasi() {
+    static SEKALI: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    SEKALI.get_or_init(|| {
+        let dir = std::env::temp_dir().join("dasbor-bmn-uji");
+        let _ = std::fs::create_dir_all(&dir);
+        std::env::set_var("SIMAN_DATA_DIR", &dir);
+    });
+}
+
 /// Susun halaman kosong saat tabel belum tersinkron.
 pub fn empty_page(table: &str, label: &str, columns: Vec<ColumnDef>, is_demo: bool) -> AssetPage {
     AssetPage {
@@ -402,5 +467,57 @@ mod tests {
     fn kolom_tidak_dikenal_dianggap_teks() {
         let cols = vec![kolom("nama", "text")];
         assert!(!kolom_numerik(&cols, "tidak_ada"));
+    }
+
+    fn stats(n: i64) -> crate::analytics::TableStats {
+        crate::analytics::TableStats {
+            row_count: n,
+            ..Default::default()
+        }
+    }
+
+    fn siap() {
+        uji_isolasi();
+        conn();
+    }
+
+    #[test]
+    fn buang_demo_dan_tulis_dalam_satu_transaksi() {
+        siap();
+        let t = "UJI_TRANSAKSI";
+        // Siapkan isi "data contoh" pada tabel lain.
+        let _ = replace_table("UJI_CONTOH", &[json!({"kd_brg": "D1"})], &stats(1), "t0");
+        assert_eq!(stored_count("UJI_CONTOH"), 1);
+
+        // Satu transaksi membuang data contoh, menulis tabel, dan menandai mode.
+        replace_table_transaksional(t, &[json!({"kd_brg": "A1"})], &stats(1), "t1", true)
+            .expect("transaksi berhasil");
+
+        assert_eq!(stored_count("UJI_CONTOH"), 0, "data contoh ikut terbuang");
+        assert_eq!(stored_count(t), 1, "data langsung tertulis");
+        assert_eq!(get_meta("mode").as_deref(), Some("live"));
+    }
+
+    #[test]
+    fn alir_baris_mengembalikan_seluruh_baris_berurutan() {
+        siap();
+        let t = "UJI_ALIR";
+        let rows: Vec<Value> = (0..5).map(|i| json!({"kd_brg": format!("K{i}")})).collect();
+        replace_table(t, &rows, &stats(5), "t0").unwrap();
+
+        let mut terlihat: Vec<String> = Vec::new();
+        alir_baris(t, |v| {
+            terlihat.push(
+                v.get("kd_brg")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        })
+        .expect("alir baris berhasil");
+        assert_eq!(terlihat.len(), 5);
+        let mut urut = terlihat.clone();
+        urut.sort();
+        assert_eq!(terlihat, urut, "urutan kunci stabil");
     }
 }

@@ -4,7 +4,7 @@
 use crate::model::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Kolom sumber yang dipakai untuk analitik.
 pub const COL_NILAI: &str = "rph_aset";
@@ -35,11 +35,12 @@ pub struct TableStats {
     pub satker: Vec<Bucket>,
     pub sumber_dana: Vec<Bucket>,
     pub perolehan: Vec<TrendPoint>,
-    /// Jumlah wilayah/satker berbeda sebelum pemotongan tampilan (untuk KPI).
+    /// Nama wilayah/satker berbeda yang lengkap (sebelum pemotongan bucket),
+    /// agar `merge` dapat menghitung kardinalitas gabungan lintas tabel.
     #[serde(default)]
-    pub provinsi_unik: i64,
+    pub provinsi_nama: Vec<String>,
     #[serde(default)]
-    pub satker_unik: i64,
+    pub satker_nama: Vec<String>,
 }
 
 fn key_of(v: &Value, col: &str) -> String {
@@ -124,9 +125,9 @@ pub fn aggregate(rows: &[Value]) -> TableStats {
     }
 
     s.kondisi = to_buckets(kondisi, 12);
-    // Simpan jumlah sebenarnya sebelum bucket dipotong untuk tampilan.
-    s.provinsi_unik = provinsi.len() as i64;
-    s.satker_unik = satker.len() as i64;
+    // Simpan daftar nama lengkap sebelum bucket dipotong untuk tampilan.
+    s.provinsi_nama = provinsi.keys().cloned().collect();
+    s.satker_nama = satker.keys().cloned().collect();
     s.provinsi = to_buckets(provinsi, 40);
     s.satker = to_buckets(satker, 25);
     s.sumber_dana = to_buckets(sumber, 12);
@@ -169,8 +170,8 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
     let mut kond = HashMap::new();
     let mut sumber = HashMap::new();
     let mut tahun: HashMap<i32, (i64, f64)> = HashMap::new();
-    let mut prov_unik: i64 = 0;
-    let mut sat_unik: i64 = 0;
+    let mut prov_unik: HashSet<String> = HashSet::new();
+    let mut sat_unik: HashSet<String> = HashSet::new();
 
     for (label, icon, volume, s) in parts {
         o.total_aset += s.row_count;
@@ -179,9 +180,18 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
         o.aset_idle += s.idle;
         o.aset_hilang += s.hilang;
         o.aset_rusak += s.rusak;
-        // Jumlah berbeda dijumlahkan dari data pra-pemotongan tiap tabel.
-        prov_unik += s.provinsi_unik;
-        sat_unik += s.satker_unik;
+        // Nama wilayah/satker yang sama di beberapa tabel hanya dihitung sekali.
+        if s.provinsi_nama.is_empty() {
+            // Cache lama belum memuat daftar nama; pakai bucket yang tersedia.
+            prov_unik.extend(s.provinsi.iter().map(|b| b.name.clone()));
+        } else {
+            prov_unik.extend(s.provinsi_nama.iter().cloned());
+        }
+        if s.satker_nama.is_empty() {
+            sat_unik.extend(s.satker.iter().map(|b| b.name.clone()));
+        } else {
+            sat_unik.extend(s.satker_nama.iter().cloned());
+        }
         o.categories.push(CategoryStat {
             label: label.clone(),
             icon: icon.clone(),
@@ -221,18 +231,8 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
     o.satker = to_buckets(sat, 15);
     o.kondisi = to_buckets(kond, 10);
     o.sumber_dana = to_buckets(sumber, 10);
-    // Cache lama (sebelum kolom ini ada) belum memuat jumlah pra-pemotongan;
-    // pakai jumlah bucket yang tersedia agar KPI tidak menampilkan nol.
-    o.total_provinsi = if prov_unik > 0 {
-        prov_unik
-    } else {
-        o.provinsi.len() as i64
-    };
-    o.total_satker = if sat_unik > 0 {
-        sat_unik
-    } else {
-        o.satker.len() as i64
-    };
+    o.total_provinsi = prov_unik.len() as i64;
+    o.total_satker = sat_unik.len() as i64;
     let mut perolehan: Vec<TrendPoint> = tahun
         .into_iter()
         .map(|(year, (jumlah, nilai))| TrendPoint {
@@ -304,5 +304,50 @@ mod tests {
             }
             _ => vec![],
         }
+    }
+
+    fn baris(provinsi: &str, satker: &str) -> Value {
+        json!({
+            "ur_prov": provinsi,
+            "nama_satker": satker,
+            "rph_aset": 1000,
+            "rph_susut": 100,
+            "tgl_perlh": "2020-01-01",
+        })
+    }
+
+    #[test]
+    fn wilayah_sama_lintas_tabel_dihitung_sekali() {
+        // Regresi: dulu jumlah unik per tabel dijumlahkan sehingga wilayah yang
+        // sama muncul berkali-kali (mis. 15 tabel x 18 provinsi = 270).
+        let a = aggregate(&[baris("ACEH", "Kejati Aceh")]);
+        let b = aggregate(&[baris("ACEH", "Kejati Aceh")]);
+        let c = aggregate(&[baris("BALI", "Kejati Bali")]);
+        let parts = vec![
+            ("Tanah".to_string(), "🗺️".to_string(), "1 MB".to_string(), a),
+            (
+                "Gedung".to_string(),
+                "🏢".to_string(),
+                "1 MB".to_string(),
+                b,
+            ),
+            ("Rumah".to_string(), "🏠".to_string(), "1 MB".to_string(), c),
+        ];
+        let o = merge(&parts, false);
+        assert_eq!(o.total_provinsi, 2, "ACEH + BALI, bukan 3");
+        assert_eq!(o.total_satker, 2);
+    }
+
+    #[test]
+    fn nama_terpotong_dari_bucket_tetap_dihitung() {
+        // Daftar bucket tampilan dibatasi; daftar nama lengkap harus tetap utuh.
+        let mut b = aggregate(&[baris("PROV-A", "SAT-A")]);
+        b.provinsi_nama = (0..60).map(|i| format!("PROV-{i}")).collect();
+        b.satker_nama = (0..40).map(|i| format!("SAT-{i}")).collect();
+        assert!(b.provinsi.len() < 60, "bucket tampilan memang dipotong");
+        let parts = vec![("Tanah".to_string(), "🗺️".to_string(), "1 MB".to_string(), b)];
+        let o = merge(&parts, false);
+        assert_eq!(o.total_provinsi, 60);
+        assert_eq!(o.total_satker, 40);
     }
 }

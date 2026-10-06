@@ -33,31 +33,76 @@ const JALAN_BEBAS: &[&str] = &["/api/login", "/api/logout"];
 
 static SESSIONS: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
 static PASSWORD: OnceLock<String> = OnceLock::new();
+static PERCOBAAN: OnceLock<Mutex<HashMap<String, (u32, Instant)>>> = OnceLock::new();
+
+/// Jendela pembatasan percobaan masuk.
+const JENDELA_PERCOBAAN: Duration = Duration::from_secs(5 * 60);
+/// Percobaan gagal maksimum per jendela sebelum alamat dikunci sementara.
+const MAKS_PERCOBAAN: u32 = 5;
 
 fn sessions() -> &'static Mutex<HashMap<String, Instant>> {
     SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Baca 32 bit acak dari sistem operasi.
-fn acak_bytes(n: usize) -> Vec<u8> {
-    use std::io::Read;
-    let mut buf = vec![0u8; n];
-    if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
-        if f.read_exact(&mut buf).is_ok() {
-            return buf;
+fn percobaan() -> &'static Mutex<HashMap<String, (u32, Instant)>> {
+    PERCOBAAN.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Kunci pembatasan: alamat klien dari header proxy, atau "lokal".
+fn kunci_klien(req: &Request) -> String {
+    for nama in ["x-forwarded-for", "x-real-ip"] {
+        if let Some(v) = req.headers().get(nama).and_then(|v| v.to_str().ok()) {
+            let first = v.split(',').next().unwrap_or("").trim();
+            if !first.is_empty() {
+                return first.to_string();
+            }
         }
     }
-    // Cadangan: turunkan dari waktu + alamat heap agar tidak pernah nol.
-    let mut x = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0x9E37_79B9_7F4A_7C15);
-    for b in buf.iter_mut() {
-        x ^= x << 13;
-        x ^= x >> 7;
-        x ^= x << 17;
-        *b = (x & 0xff) as u8;
+    "lokal".to_string()
+}
+
+/// Berapa detik lagi alamat ini harus menunggu sebelum boleh mencoba lagi.
+fn sisa_tunggu(kunci: &str) -> Option<u64> {
+    let mut p = percobaan().lock().unwrap();
+    let now = Instant::now();
+    p.retain(|_, (_, until)| *until > now);
+    let (jumlah, until) = *p.get(kunci)?;
+    if jumlah >= MAKS_PERCOBAAN && until > now {
+        Some((until - now).as_secs().max(1))
+    } else {
+        None
     }
+}
+
+/// Catat satu percobaan gagal; kembalikan sisa tunggu bila sudah terkunci.
+fn catat_gagal(kunci: &str) -> Option<u64> {
+    let mut p = percobaan().lock().unwrap();
+    let now = Instant::now();
+    p.retain(|_, (_, until)| *until > now);
+    let entri = p
+        .entry(kunci.to_string())
+        .or_insert((0, now + JENDELA_PERCOBAAN));
+    entri.0 += 1;
+    entri.1 = now + JENDELA_PERCOBAAN;
+    if entri.0 >= MAKS_PERCOBAAN {
+        Some((entri.1 - now).as_secs().max(1))
+    } else {
+        None
+    }
+}
+
+/// Hapus catatan percobaan setelah masuk berhasil.
+fn hapus_percobaan(kunci: &str) {
+    percobaan().lock().unwrap().remove(kunci);
+}
+
+/// Baca byte acak dari sistem operasi.
+///
+/// Gagal-tertutup: bila sumber acak sistem tidak tersedia, proses panik alih-alih
+/// menurunkan kredensial dari waktu sistem yang dapat ditebak (CWE-338).
+fn acak_bytes(n: usize) -> Vec<u8> {
+    let mut buf = vec![0u8; n];
+    getrandom::fill(&mut buf).expect("sumber acak sistem operasi tidak tersedia");
     buf
 }
 
@@ -183,6 +228,26 @@ fn permintaan_https(req: &Request) -> bool {
         })
 }
 
+/// Apakah cookie sesi harus ditandai `Secure`.
+///
+/// Gagal-tertutup: `Secure` dipasang secara bawaan, dan hanya dilepas bila
+/// permintaan jelas berasal dari host lokal untuk pengembangan. Dengan begitu
+/// sesi tidak pernah dapat dikirim lewat HTTP biasa hanya karena proxy lupa
+/// mengirim `x-forwarded-proto` (CWE-614).
+fn pakai_secure(req: &Request) -> bool {
+    if permintaan_https(req) {
+        return true;
+    }
+    let host = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let lokal =
+        host.starts_with("localhost") || host.starts_with("127.0.0.1") || host.starts_with("[::1]");
+    !lokal
+}
+
 fn header_cookie(token: &str, https: bool) -> String {
     let mut c = format!(
         "{COOKIE_NAME}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}",
@@ -295,9 +360,16 @@ pub async fn gerbang(req: Request, next: Next) -> Response {
             .into_response();
     }
 
+    // Aset statis tidak lagi dikecualikan: berkas di `/pkg` hanya disajikan
+    // kepada pemegang sesi, agar direktori aset tidak menjadi jalan unduh
+    // tanpa masuk (CWE-306).
     if path.starts_with("/pkg/") || path.starts_with("/favicon") {
-        // Aset statis tidak berisi data; biarkan agar halaman masuk tetap ringan.
-        return next.run(req).await;
+        return (
+            StatusCode::UNAUTHORIZED,
+            [(header::CONTENT_TYPE, HeaderValue::from_static("text/plain"))],
+            Body::from("sesi tidak valid — silakan masuk kembali"),
+        )
+            .into_response();
     }
 
     let mut res = Response::new(Body::from(halaman_masuk(None)));
@@ -332,7 +404,13 @@ fn redirect_ke(lokasi: &str, cookie: Option<String>) -> Response {
 
 /// `POST /api/login` — verifikasi kata sandi lalu mulai sesi.
 pub async fn login(req: Request) -> Response {
-    let https = permintaan_https(&req);
+    let https = pakai_secure(&req);
+    let kunci = kunci_klien(&req);
+    if let Some(sisa) = sisa_tunggu(&kunci) {
+        return halaman_galat(&format!(
+            "Terlalu banyak percobaan. Coba lagi dalam {sisa} detik."
+        ));
+    }
     let body = match axum::body::to_bytes(req.into_body(), 8 * 1024).await {
         Ok(b) => b,
         Err(_) => return halaman_galat("Permintaan tidak terbaca."),
@@ -342,15 +420,23 @@ pub async fn login(req: Request) -> Response {
         Err(_) => return halaman_galat("Permintaan tidak terbaca."),
     };
     if !cocok(&form.password) {
+        // Perlambat sedikit agar percobaan berturut-turut tidak gratis.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        if let Some(sisa) = catat_gagal(&kunci) {
+            return halaman_galat(&format!(
+                "Terlalu banyak percobaan. Coba lagi dalam {sisa} detik."
+            ));
+        }
         return halaman_galat("Kata sandi salah.");
     }
+    hapus_percobaan(&kunci);
     let token = buat_sesi();
     redirect_ke("/", Some(header_cookie(&token, https)))
 }
 
 /// `POST /api/logout` — akhiri sesi.
 pub async fn logout(req: Request) -> Response {
-    let https = permintaan_https(&req);
+    let https = pakai_secure(&req);
     if let Some(token) = ambil_cookie(&req, COOKIE_NAME) {
         hapus_sesi(&token);
     }
@@ -399,5 +485,44 @@ mod tests {
         let html = halaman_masuk(Some("<script>x</script>"));
         assert!(!html.contains("<script>x"));
         assert!(html.contains("&lt;script&gt;"));
+    }
+
+    #[test]
+    fn pembatasan_percobaan_mengunci_setelah_batas() {
+        let kunci = "uji-pembatas";
+        hapus_percobaan(kunci);
+        for i in 0..MAKS_PERCOBAAN {
+            let hasil = catat_gagal(kunci);
+            if i + 1 < MAKS_PERCOBAAN {
+                assert!(hasil.is_none(), "belum boleh terkunci pada percobaan {i}");
+            } else {
+                assert!(hasil.is_some(), "harus terkunci pada percobaan terakhir");
+            }
+        }
+        assert!(sisa_tunggu(kunci).is_some());
+        // Masuk berhasil menghapus catatan sehingga tidak lagi terkunci.
+        hapus_percobaan(kunci);
+        assert!(sisa_tunggu(kunci).is_none());
+    }
+
+    #[test]
+    fn cookie_secure_kecuali_host_lokal() {
+        let buat = |host: &str, proto: Option<&str>| {
+            let mut b = Request::builder()
+                .uri("/api/login")
+                .header(header::HOST, host);
+            if let Some(p) = proto {
+                b = b.header("x-forwarded-proto", p);
+            }
+            pakai_secure(&b.body(Body::empty()).unwrap())
+        };
+        // Produksi tanpa header proxy: tetap Secure.
+        assert!(buat("dasbor.example.go.id", None));
+        assert!(buat("dasbor.example.go.id", Some("http")));
+        // Proxy menyatakan https.
+        assert!(buat("dasbor.example.go.id", Some("https")));
+        // Host lokal untuk pengembangan boleh tanpa Secure.
+        assert!(!buat("localhost:12000", None));
+        assert!(!buat("127.0.0.1:12000", None));
     }
 }
