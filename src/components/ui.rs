@@ -153,7 +153,11 @@ pub fn ErrorBlock(message: String) -> impl IntoView {
 
 /// Pesan ketika belum ada data sama sekali.
 #[component]
-pub fn EmptyBlock(title: &'static str, message: &'static str, action: Option<AnyView>) -> impl IntoView {
+pub fn EmptyBlock(
+    title: &'static str,
+    message: &'static str,
+    action: Option<AnyView>,
+) -> impl IntoView {
     view! {
         <div class="grid place-items-center rounded-xl border border-dashed border-ink-200 p-8 text-center dark:border-ink-700">
             <div class="max-w-md">

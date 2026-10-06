@@ -140,7 +140,11 @@ fn DataBody(
                         </span>
                         <select
                             class="input"
-                            on:change=move |ev| set_sort.set(Some(event_target_value(&ev)))
+                            on:change=move |ev| {
+                                let v = event_target_value(&ev);
+                                set_sort.set(if v.trim().is_empty() { None } else { Some(v) });
+                                set_page.set(1);
+                            }
                         >
                             <option value="">"— tanpa urutan —"</option>
                             {columns()
@@ -255,14 +259,29 @@ fn DataTable(
     sort: ReadSignal<Option<String>>,
     dir: ReadSignal<String>,
 ) -> impl IntoView {
-    let total_pages = ((data.total as f64) / (data.per_page as f64)).ceil().max(1.0) as i64;
+    let total_pages = ((data.total as f64) / (data.per_page as f64))
+        .ceil()
+        .max(1.0) as i64;
     let page = data.page;
     let columns = data.columns.clone();
     let rows = data.rows.clone();
     let numeric = |name: &str| {
         matches!(
             name,
-            "rph_aset" | "rph_susut" | "rph_mutasi" | "rph_perolehan" | "rph_buku" | "umur_sisa" | "luas"
+            "rph_aset"
+                | "rph_susut"
+                | "rph_mutasi"
+                | "rph_perolehan"
+                | "rph_buku"
+                | "umur_sisa"
+                | "luas"
+        )
+    };
+    // Hanya kolom rupiah yang memakai format mata uang; umur & luas tetap angka biasa.
+    let rupiah = |name: &str| {
+        matches!(
+            name,
+            "rph_aset" | "rph_susut" | "rph_mutasi" | "rph_perolehan" | "rph_buku"
         )
     };
 
@@ -360,13 +379,14 @@ fn DataTable(
                                                 .map(|(ci, v)| {
                                                     let col = columns.get(ci);
                                                     let is_num = col.map(|c| numeric(&c.name)).unwrap_or(false);
+                                                    let is_rupiah = col.map(|c| rupiah(&c.name)).unwrap_or(false);
                                                     let text = if v.is_empty() {
                                                         "—".to_string()
                                                     } else {
                                                         v.clone()
                                                     };
                                                     let is_num_cell = is_num && !v.is_empty();
-                                                    let display = if is_num_cell {
+                                                    let display = if is_num_cell && is_rupiah {
                                                         crate::model::format_rupiah(
                                                             crate::model::to_f64(&serde_json::Value::String(v.clone())),
                                                         )

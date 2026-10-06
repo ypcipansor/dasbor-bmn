@@ -54,15 +54,19 @@ fn read_file_config() -> FileConfig {
 #[cfg(feature = "ssr")]
 fn load() -> Config {
     let file = read_file_config();
+    // Berkas yang tersimpan lewat halaman Pengaturan adalah pilihan terakhir
+    // pengguna, jadi ia menang atas environment. Environment hanya dipakai
+    // sebagai nilai awal saat berkas belum diisi.
     let pick = |env_keys: &[&str], file_val: &str, default: &str| -> String {
-        env_any(env_keys).unwrap_or_else(|| {
-            if file_val.trim().is_empty() {
-                default.to_string()
-            } else {
-                file_val.trim().to_string()
-            }
-        })
+        let f = file_val.trim();
+        if !f.is_empty() {
+            f.to_string()
+        } else {
+            env_any(env_keys).unwrap_or_else(|| default.to_string())
+        }
     };
+    // Perketat izin berkas kredensial yang mungkin dibuat versi lama.
+    crate::fs_aman::rapatkan(&config_path());
     Config {
         base_url: env_any(&["SIMAN_BASE_URL", "BASE_URL"])
             .unwrap_or_else(|| "https://apigateway.kemenkeu.go.id".to_string()),
@@ -86,7 +90,11 @@ fn load() -> Config {
 /// Konfigurasi aktif; dimuat sekali dari environment lalu dapat ditimpa dari UI.
 #[cfg(feature = "ssr")]
 pub fn get() -> Config {
-    CONFIG.get_or_init(|| RwLock::new(load())).read().unwrap().clone()
+    CONFIG
+        .get_or_init(|| RwLock::new(load()))
+        .read()
+        .unwrap()
+        .clone()
 }
 
 /// Simpan konfigurasi ke `data/config.json` dan terapkan segera.
@@ -109,13 +117,16 @@ pub fn save_file_config(patch: FileConfig) -> std::io::Result<()> {
     if !patch.ba_key.is_empty() {
         current.ba_key = patch.ba_key;
     }
-    std::fs::write(&path, serde_json::to_string_pretty(&current)?)?;
+    // Rahasia ditulis dengan mode 0600 agar tidak terbaca pengguna lokal lain.
+    crate::fs_aman::tulis_privat(&path, serde_json::to_string_pretty(&current)?.as_bytes())?;
     let mut c = get();
     c.client_id = current.client_id.clone();
     c.client_secret = current.client_secret.clone();
     c.grant_type = current.grant_type.clone();
     c.ba_key = current.ba_key.clone();
     *CONFIG.get_or_init(|| RwLock::new(load())).write().unwrap() = c;
+    // Token lama diterbitkan untuk kredensial lama, jadi tidak boleh dipakai lagi.
+    crate::sldk::lupakan_token();
     Ok(())
 }
 

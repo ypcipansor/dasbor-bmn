@@ -3,8 +3,8 @@ use leptos::prelude::*;
 use crate::model::{format_number, format_rupiah_short};
 
 const PALETTE: &[&str] = &[
-    "#1f47f5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6",
-    "#ec4899", "#14b8a6", "#f97316", "#6366f1", "#84cc16", "#06b6d4",
+    "#1f47f5", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6", "#ec4899", "#14b8a6",
+    "#f97316", "#6366f1", "#84cc16", "#06b6d4",
 ];
 
 fn color_at(i: usize) -> &'static str {
@@ -159,10 +159,7 @@ pub fn BarList(
 
 /// Diagram garis dengan area untuk tren perolehan per tahun.
 #[component]
-pub fn AreaChart(
-    points: Vec<(i32, i64, f64)>,
-    value_kind: &'static str,
-) -> impl IntoView {
+pub fn AreaChart(points: Vec<(i32, i64, f64)>, value_kind: &'static str) -> impl IntoView {
     const W: f64 = 640.0;
     const H: f64 = 200.0;
     const PAD_L: f64 = 46.0;
@@ -179,7 +176,13 @@ pub fn AreaChart(
 
     let y_max = points
         .iter()
-        .map(|(_, j, v)| if value_kind == "rupiah" { *v } else { *j as f64 })
+        .map(|(_, j, v)| {
+            if value_kind == "rupiah" {
+                *v
+            } else {
+                *j as f64
+            }
+        })
         .fold(0.0_f64, f64::max)
         .max(1.0);
     let n = points.len() as f64;
@@ -191,7 +194,11 @@ pub fn AreaChart(
         .enumerate()
         .map(|(i, (y, j, v))| {
             let x = PAD_L + (i as f64 / (n - 1.0)) * plot_w;
-            let val = if value_kind == "rupiah" { *v } else { *j as f64 };
+            let val = if value_kind == "rupiah" {
+                *v
+            } else {
+                *j as f64
+            };
             let yp = PAD_T + plot_h - (val / y_max) * plot_h;
             (x, yp, *y, *j, *v)
         })

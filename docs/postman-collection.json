@@ -33,12 +33,12 @@
 					"urlencoded": [
 						{
 							"key": "client_id",
-							"value": "simanv2.kejagung",
+							"value": "{{client_id}}",
 							"type": "text"
 						},
 						{
 							"key": "client_secret",
-							"value": "e5f60b3c9b8d49a2b84032b5f994d242",
+							"value": "{{client_secret}}",
 							"type": "text"
 						},
 						{

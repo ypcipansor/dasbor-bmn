@@ -67,6 +67,7 @@ Nilai dibaca dari environment, dan dapat juga diisi lewat halaman **Pengaturan**
 | `SIMAN_GRANT_TYPE` | Tipe grant OAuth2 | `client_credentials` |
 | `SIMAN_BA_KEY` | Kode BA unit Kejaksaan | — |
 | `SIMAN_DATA_DIR` | Direktori cache & konfigurasi | `data` |
+| `DASBOR_PASSWORD` | Kata sandi gerbang dasbor | dibuat otomatis |
 
 Alias tanpa awalan `SIMAN_` (`BASE_URL`, `CLIENT_ID`, `CLIENT_SECRET`,
 `GRANT_TYPE`, `BA_KEY`) juga dikenali.
@@ -82,6 +83,8 @@ src/
   catalog.rs     Katalog 15 tabel Master Aset BMN
   schema.rs      Metadata 106 kolom (dibangkitkan dari dokumen SLDK)
   config.rs      Konfigurasi runtime + berkas
+  fs_aman.rs     Penulisan berkas dengan izin 0600
+  auth.rs        Gerbang masuk: kata sandi, sesi cookie, middleware Axum
   sldk.rs        Klien Web Service SLDK (token SSO + gateway KSB)
   analytics.rs   Agregasi murni: bucket, tren, ringkasan
   store.rs       Cache lokal SQLite (baris, agregat, status)
@@ -109,8 +112,15 @@ cargo test --features ssr --lib
 
 ## Catatan keamanan
 
+- Seluruh data dan aksi di balik gerbang masuk. Halaman meminta kata sandi
+  (`DASBOR_PASSWORD`, atau kata sandi acak yang dibuat di `data/auth.json`),
+  dan setiap panggilan `/api/*` tanpa sesi yang sah dijawab `401`.
+- Sesi memakai cookie `HttpOnly` `SameSite=Lax`; token disimpan sebagai hash,
+  kedaluwarsa, dan dibandingkan dengan waktu konstan.
 - Rahasia hanya tersimpan di server (`data/config.json` atau environment) dan
   tidak pernah dikirim balik ke peramban.
+- Berkas `data/config.json` dan `data/auth.json` ditulis dengan izin `0600`.
+- Ekspor CSV menetralkan sel yang dimulai `= + - @` agar tidak menjadi formula.
 - `data/` dan seluruh basis data SQLite dikecualikan dari Git.
 - Data BMN bersifat **Terbatas** — gunakan sesuai kewenangan.
 

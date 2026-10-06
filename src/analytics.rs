@@ -35,6 +35,11 @@ pub struct TableStats {
     pub satker: Vec<Bucket>,
     pub sumber_dana: Vec<Bucket>,
     pub perolehan: Vec<TrendPoint>,
+    /// Jumlah wilayah/satker berbeda sebelum pemotongan tampilan (untuk KPI).
+    #[serde(default)]
+    pub provinsi_unik: i64,
+    #[serde(default)]
+    pub satker_unik: i64,
 }
 
 fn key_of(v: &Value, col: &str) -> String {
@@ -77,7 +82,9 @@ fn year_of(v: &Value) -> Option<i32> {
         return None;
     }
     let head = &s[..4];
-    head.parse::<i32>().ok().filter(|y| (1900..=2100).contains(y))
+    head.parse::<i32>()
+        .ok()
+        .filter(|y| (1900..=2100).contains(y))
 }
 
 /// Hitung agregat satu tabel dari kumpulan baris.
@@ -117,12 +124,19 @@ pub fn aggregate(rows: &[Value]) -> TableStats {
     }
 
     s.kondisi = to_buckets(kondisi, 12);
+    // Simpan jumlah sebenarnya sebelum bucket dipotong untuk tampilan.
+    s.provinsi_unik = provinsi.len() as i64;
+    s.satker_unik = satker.len() as i64;
     s.provinsi = to_buckets(provinsi, 40);
     s.satker = to_buckets(satker, 25);
     s.sumber_dana = to_buckets(sumber, 12);
     let mut perolehan: Vec<TrendPoint> = tahun
         .into_iter()
-        .map(|(year, (jumlah, nilai))| TrendPoint { year, jumlah, nilai })
+        .map(|(year, (jumlah, nilai))| TrendPoint {
+            year,
+            jumlah,
+            nilai,
+        })
         .collect();
     perolehan.sort_by_key(|t| t.year);
     s.perolehan = perolehan;
@@ -155,6 +169,8 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
     let mut kond = HashMap::new();
     let mut sumber = HashMap::new();
     let mut tahun: HashMap<i32, (i64, f64)> = HashMap::new();
+    let mut prov_unik: i64 = 0;
+    let mut sat_unik: i64 = 0;
 
     for (label, icon, volume, s) in parts {
         o.total_aset += s.row_count;
@@ -163,6 +179,9 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
         o.aset_idle += s.idle;
         o.aset_hilang += s.hilang;
         o.aset_rusak += s.rusak;
+        // Jumlah berbeda dijumlahkan dari data pra-pemotongan tiap tabel.
+        prov_unik += s.provinsi_unik;
+        sat_unik += s.satker_unik;
         o.categories.push(CategoryStat {
             label: label.clone(),
             icon: icon.clone(),
@@ -202,11 +221,25 @@ pub fn merge(parts: &[(String, String, String, TableStats)], is_demo: bool) -> O
     o.satker = to_buckets(sat, 15);
     o.kondisi = to_buckets(kond, 10);
     o.sumber_dana = to_buckets(sumber, 10);
-    o.total_provinsi = o.provinsi.len() as i64;
-    o.total_satker = o.satker.len() as i64;
+    // Cache lama (sebelum kolom ini ada) belum memuat jumlah pra-pemotongan;
+    // pakai jumlah bucket yang tersedia agar KPI tidak menampilkan nol.
+    o.total_provinsi = if prov_unik > 0 {
+        prov_unik
+    } else {
+        o.provinsi.len() as i64
+    };
+    o.total_satker = if sat_unik > 0 {
+        sat_unik
+    } else {
+        o.satker.len() as i64
+    };
     let mut perolehan: Vec<TrendPoint> = tahun
         .into_iter()
-        .map(|(year, (jumlah, nilai))| TrendPoint { year, jumlah, nilai })
+        .map(|(year, (jumlah, nilai))| TrendPoint {
+            year,
+            jumlah,
+            nilai,
+        })
         .collect();
     perolehan.sort_by_key(|t| t.year);
     if perolehan.len() > 30 {

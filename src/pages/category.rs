@@ -51,21 +51,21 @@ fn CategoryBody(
         .collect();
 
     // Salinan sederhana agar closure tampilan tidak meminjam `data`/`tables`.
+    // Kartu memakai identitas tabel (bukan label) supaya cocok dengan chip skema.
     let cards: Vec<(String, String, String, i64, f64)> = data
         .categories
         .iter()
         .map(|c| {
-            (
-                c.label.clone(),
-                c.icon.clone(),
-                c.volume.clone(),
-                c.jumlah,
-                c.nilai,
-            )
+            let table = tables
+                .iter()
+                .find(|t| t.label == c.label)
+                .map(|t| t.table.clone())
+                .unwrap_or_default();
+            (table, c.icon.clone(), c.volume.clone(), c.jumlah, c.nilai)
         })
         .collect();
-    let first_label = cards.first().map(|c| c.0.clone()).unwrap_or_default();
-    let first_label_for_card = first_label.clone();
+    let first_table = cards.first().map(|c| c.0.clone()).unwrap_or_default();
+    let first_table_for_card = first_table.clone();
     let default_table = tables.first().map(|t| t.table.clone()).unwrap_or_default();
     let default_table_for_chip = default_table.clone();
     let default_table_for_detail = default_table.clone();
@@ -75,7 +75,11 @@ fn CategoryBody(
         let default_table = default_table_for_detail.clone();
         move || {
             let sel = selected.get();
-            let name = if sel.is_empty() { default_table.clone() } else { sel };
+            let name = if sel.is_empty() {
+                default_table.clone()
+            } else {
+                sel
+            };
             tables.iter().find(|t| t.table == name).cloned()
         }
     };
@@ -93,15 +97,20 @@ fn CategoryBody(
         <div class="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             {cards
                 .iter()
-                .map(|(label, icon, volume, jumlah, nilai)| {
-                    let label = label.clone();
+                .map(|(table, icon, volume, jumlah, nilai)| {
+                    let table = table.clone();
                     let icon = icon.clone();
                     let volume = volume.clone();
                     let jumlah = *jumlah;
                     let nilai = *nilai;
-                    let label_for_click = label.clone();
-                    let label_for_active = label.clone();
-                    let first = first_label_for_card.clone();
+                    let table_for_click = table.clone();
+                    let table_for_active = table.clone();
+                    let first = first_table_for_card.clone();
+                    let display_label = tables
+                        .iter()
+                        .find(|t| t.table == table)
+                        .map(|t| t.label.clone())
+                        .unwrap_or_else(|| table.clone());
                     view! {
                         <button
                             type="button"
@@ -110,7 +119,7 @@ fn CategoryBody(
                                 let active = if sel.is_empty() { first.clone() } else { sel };
                                 format!(
                                     "card p-4 text-left transition-shadow hover:shadow-md {}",
-                                    if active == label_for_active {
+                                    if active == table_for_active {
                                         "ring-2 ring-bmn-500"
                                     } else {
                                         ""
@@ -118,8 +127,8 @@ fn CategoryBody(
                                 )
                             }
                             on:click={
-                                let l = label_for_click.clone();
-                                move |_| set_selected.set(l.clone())
+                                let t = table_for_click.clone();
+                                move |_| set_selected.set(t.clone())
                             }
                         >
                             <div class="flex items-start justify-between gap-2">
@@ -128,8 +137,8 @@ fn CategoryBody(
                                     {volume.clone()}
                                 </span>
                             </div>
-                            <p class="mt-2 truncate text-sm font-semibold" title=label.clone()>
-                                {label.clone()}
+                            <p class="mt-2 truncate text-sm font-semibold" title=display_label.clone()>
+                                {display_label.clone()}
                             </p>
                             <p class="mt-1 text-lg font-bold tabular-nums">
                                 {format_number(jumlah)}

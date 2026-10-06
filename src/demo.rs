@@ -7,16 +7,33 @@ use crate::catalog;
 use serde_json::{json, Value};
 
 const PROVINSI: &[&str] = &[
-    "DKI Jakarta", "Jawa Barat", "Jawa Tengah", "Jawa Timur", "Sumatera Utara",
-    "Sumatera Selatan", "Sulawesi Selatan", "Kalimantan Timur", "Bali", "Papua",
-    "Aceh", "Riau", "Lampung", "NTB", "NTT", "Banten", "DI Yogyakarta", "Maluku",
+    "DKI Jakarta",
+    "Jawa Barat",
+    "Jawa Tengah",
+    "Jawa Timur",
+    "Sumatera Utara",
+    "Sumatera Selatan",
+    "Sulawesi Selatan",
+    "Kalimantan Timur",
+    "Bali",
+    "Papua",
+    "Aceh",
+    "Riau",
+    "Lampung",
+    "NTB",
+    "NTT",
+    "Banten",
+    "DI Yogyakarta",
+    "Maluku",
 ];
 const KONDISI: &[&str] = &["Baik", "Rusak Ringan", "Rusak Berat"];
-const SUMBER: &[&str] = &[
-    "APBN", "APBD", "Hibah", "SBSN", "PNBP", "Perolehan Lainnya",
-];
+const SUMBER: &[&str] = &["APBN", "APBD", "Hibah", "SBSN", "PNBP", "Perolehan Lainnya"];
 const KELOMPOK: &[&str] = &[
-    "Peralatan dan Mesin", "Bangunan", "Tanah", "Jalan/Irigasi/Jaringan", "Aset Tetap Lainnya",
+    "Peralatan dan Mesin",
+    "Bangunan",
+    "Tanah",
+    "Jalan/Irigasi/Jaringan",
+    "Aset Tetap Lainnya",
 ];
 
 /// RNG deterministik sederhana (LCG) agar data demo stabil antar-build.
@@ -24,7 +41,10 @@ struct Rng(u64);
 
 impl Rng {
     fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         self.0 >> 16
     }
     fn range(&mut self, lo: u64, hi: u64) -> u64 {
@@ -113,6 +133,17 @@ pub fn seed() {
         let _ = crate::store::replace_table(t.table, &rows, &stats, &now);
     }
     let _ = crate::store::set_meta("mode", "demo");
+}
+
+/// Buang seluruh baris dan metadata data contoh.
+///
+/// Dipanggil sebelum data langsung pertama masuk agar kategori yang belum
+/// tersinkron tidak pernah tercampur dengan data contoh di bawah label
+/// "Data langsung".
+pub fn hapus() {
+    for t in catalog::TABLES {
+        let _ = crate::store::clear_table(t.table);
+    }
 }
 
 /// Apakah basis data saat ini berisi data contoh.

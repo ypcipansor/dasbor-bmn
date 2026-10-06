@@ -21,11 +21,36 @@ struct NavItem {
 }
 
 const NAV: &[NavItem] = &[
-    NavItem { href: "/", label: "Ringkasan", icon: "📊", desc: "KPI & analitik utama" },
-    NavItem { href: "/kategori", label: "Kategori Aset", icon: "🗂️", desc: "15 kategori BMN" },
-    NavItem { href: "/data", label: "Data Aset", icon: "🔎", desc: "Telusuri & ekspor" },
-    NavItem { href: "/sinkronisasi", label: "Sinkronisasi", icon: "🔄", desc: "Tarik data SLDK" },
-    NavItem { href: "/pengaturan", label: "Pengaturan", icon: "⚙️", desc: "Kredensial & koneksi" },
+    NavItem {
+        href: "/",
+        label: "Ringkasan",
+        icon: "📊",
+        desc: "KPI & analitik utama",
+    },
+    NavItem {
+        href: "/kategori",
+        label: "Kategori Aset",
+        icon: "🗂️",
+        desc: "15 kategori BMN",
+    },
+    NavItem {
+        href: "/data",
+        label: "Data Aset",
+        icon: "🔎",
+        desc: "Telusuri & ekspor",
+    },
+    NavItem {
+        href: "/sinkronisasi",
+        label: "Sinkronisasi",
+        icon: "🔄",
+        desc: "Tarik data SLDK",
+    },
+    NavItem {
+        href: "/pengaturan",
+        label: "Pengaturan",
+        icon: "⚙️",
+        desc: "Kredensial & koneksi",
+    },
 ];
 
 /// Kerangka aplikasi: sidebar desktop, drawer mobile, dan bilah atas.
@@ -185,6 +210,12 @@ fn SidebarFooter() -> impl IntoView {
             <p class="font-medium text-ink-500 dark:text-ink-300">"SLDK SIMAN v2"</p>
             <p>"Sumber: DJKN · Kemenkeu RI"</p>
             <p class="mt-1">"Klasifikasi: Terbatas"</p>
+            <form method="post" action="/api/logout" class="mt-3">
+                <button type="submit" class="btn-ghost w-full justify-center px-2.5 py-2">
+                    <span aria-hidden="true">"🚪"</span>
+                    <span class="ml-1">"Keluar"</span>
+                </button>
+            </form>
         </div>
     }
 }

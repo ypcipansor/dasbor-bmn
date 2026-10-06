@@ -82,11 +82,7 @@ fn OverviewBody(data: Overview) -> impl IntoView {
         0.0
     };
     let jumlah_kategori = d.categories.len();
-    let volume_total: f64 = d
-        .categories
-        .iter()
-        .map(|c| parse_volume(&c.volume))
-        .sum();
+    let volume_total: f64 = d.categories.iter().map(|c| parse_volume(&c.volume)).sum();
     let top_kategori = d
         .categories
         .first()

@@ -46,7 +46,10 @@ pub fn conn() -> &'static Mutex<Connection> {
 /// Kunci unik satu baris aset; fallback ke indeks bila kode barang kosong.
 pub fn row_key(v: &Value, idx: usize) -> String {
     for col in ["kd_brg", "no_aset", "no_kib", "kode_register"] {
-        let s = v.get(col).map(crate::model::cell_to_string).unwrap_or_default();
+        let s = v
+            .get(col)
+            .map(crate::model::cell_to_string)
+            .unwrap_or_default();
         if !s.trim().is_empty() {
             return format!("{col}:{}", s.trim());
         }
@@ -65,8 +68,9 @@ pub fn replace_table(
     let tx = c.transaction()?;
     tx.execute("DELETE FROM assets WHERE table_name = ?1", params![table])?;
     {
-        let mut stmt =
-            tx.prepare("INSERT OR REPLACE INTO assets (table_name, row_key, data) VALUES (?1, ?2, ?3)")?;
+        let mut stmt = tx.prepare(
+            "INSERT OR REPLACE INTO assets (table_name, row_key, data) VALUES (?1, ?2, ?3)",
+        )?;
         let mut seen: HashSet<String> = HashSet::new();
         for (i, r) in rows.iter().enumerate() {
             let mut k = row_key(r, i);
@@ -83,7 +87,12 @@ pub fn replace_table(
             row_count = excluded.row_count,
             stats = excluded.stats,
             synced_at = excluded.synced_at",
-        params![table, stats.row_count, serde_json::to_string(stats).unwrap_or_default(), synced_at],
+        params![
+            table,
+            stats.row_count,
+            serde_json::to_string(stats).unwrap_or_default(),
+            synced_at
+        ],
     )?;
     tx.commit()
 }
@@ -121,7 +130,10 @@ pub fn sync_statuses() -> Vec<(String, i64, Option<String>)> {
 pub fn clear_table(table: &str) -> rusqlite::Result<()> {
     let c = conn().lock().unwrap();
     c.execute("DELETE FROM assets WHERE table_name = ?1", params![table])?;
-    c.execute("DELETE FROM sync_meta WHERE table_name = ?1", params![table])?;
+    c.execute(
+        "DELETE FROM sync_meta WHERE table_name = ?1",
+        params![table],
+    )?;
     Ok(())
 }
 
@@ -134,7 +146,11 @@ pub fn clear_all() -> rusqlite::Result<()> {
 }
 
 /// Simpan agregat satu tabel tanpa menyentuh barisnya (dipakai mode demo).
-pub fn upsert_stats(table: &str, stats: &TableStats, synced_at: Option<&str>) -> rusqlite::Result<()> {
+pub fn upsert_stats(
+    table: &str,
+    stats: &TableStats,
+    synced_at: Option<&str>,
+) -> rusqlite::Result<()> {
     let c = conn().lock().unwrap();
     c.execute(
         "INSERT INTO sync_meta (table_name, row_count, stats, synced_at)
@@ -169,12 +185,45 @@ pub fn all_stats() -> Vec<(String, TableStats, Option<String>)> {
         })
         .unwrap();
     rows.filter_map(|r| r.ok())
-        .filter_map(|(t, s, at)| serde_json::from_str::<TableStats>(&s).ok().map(|st| (t, st, at)))
+        .filter_map(|(t, s, at)| {
+            serde_json::from_str::<TableStats>(&s)
+                .ok()
+                .map(|st| (t, st, at))
+        })
         .collect()
 }
 
 fn value_of(v: &Value, col: &str) -> String {
-    v.get(col).map(crate::model::cell_to_string).unwrap_or_default()
+    v.get(col)
+        .map(crate::model::cell_to_string)
+        .unwrap_or_default()
+}
+
+/// Apakah kolom dibandingkan sebagai angka (memakai tipe dari skema).
+pub fn kolom_numerik(columns: &[ColumnDef], name: &str) -> bool {
+    columns.iter().find(|c| c.name == name).is_some_and(|c| {
+        matches!(
+            c.r#type.as_str(),
+            "int" | "number" | "decimal" | "float" | "numeric" | "bigint"
+        )
+    })
+}
+
+/// Urutkan nilai baris untuk pengurutan halaman.
+fn banding_urut(a: &Value, b: &Value, sc: &str, numerik: bool, dir: &str) -> std::cmp::Ordering {
+    let ord = if numerik {
+        crate::model::to_f64(a.get(sc).unwrap_or(&Value::Null))
+            .total_cmp(&crate::model::to_f64(b.get(sc).unwrap_or(&Value::Null)))
+    } else {
+        value_of(a, sc)
+            .to_lowercase()
+            .cmp(&value_of(b, sc).to_lowercase())
+    };
+    if dir.eq_ignore_ascii_case("desc") {
+        ord.reverse()
+    } else {
+        ord
+    }
 }
 
 /// Ambil satu halaman baris aset dengan pencarian dan pengurutan sederhana.
@@ -217,28 +266,11 @@ pub fn page(
         })
         .collect();
 
-    if let Some(sc) = sort {
-        items.sort_by(|a, b| {
-            let av = a.get(sc);
-            let bv = b.get(sc);
-            let ord = match (av, bv) {
-                (Some(x), Some(y)) => {
-                    let xn = crate::model::to_f64(x);
-                    let yn = crate::model::to_f64(y);
-                    if xn != 0.0 || yn != 0.0 {
-                        xn.total_cmp(&yn)
-                    } else {
-                        value_of(a, sc).to_lowercase().cmp(&value_of(b, sc).to_lowercase())
-                    }
-                }
-                _ => std::cmp::Ordering::Equal,
-            };
-            if dir.eq_ignore_ascii_case("desc") {
-                ord.reverse()
-            } else {
-                ord
-            }
-        });
+    // Urutan kosong berarti "tanpa urutan", bukan urut berdasarkan nama kosong.
+    if let Some(sc) = sort.map(str::trim).filter(|s| !s.is_empty()) {
+        // Kolom teks dibandingkan sebagai teks, walaupun memuat angka (mis. "A2").
+        let numerik = kolom_numerik(columns, sc);
+        items.sort_by(|a, b| banding_urut(a, b, sc, numerik, dir));
     }
 
     let filtered = items.len() as i64;
@@ -304,17 +336,71 @@ pub fn statuses_with_labels() -> Vec<SyncStatus> {
         .iter()
         .map(|t| {
             let found = sync_statuses().into_iter().find(|(n, _, _)| n == t.table);
-            let (count, at) = found
-                .map(|(_, c, a)| (c, a))
-                .unwrap_or((0, None));
+            let (count, at) = found.map(|(_, c, a)| (c, a)).unwrap_or((0, None));
             SyncStatus {
                 table: t.table.to_string(),
                 label: t.label.to_string(),
                 row_count: count,
                 last_sync: at.clone(),
-                status: if at.is_some() { "tersinkron".into() } else { "belum".into() },
+                status: if at.is_some() {
+                    "tersinkron".into()
+                } else {
+                    "belum".into()
+                },
                 message: None,
             }
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::ColumnDef;
+    use serde_json::json;
+
+    fn kolom(nama: &str, tipe: &str) -> ColumnDef {
+        ColumnDef {
+            name: nama.to_string(),
+            label: nama.to_string(),
+            r#type: tipe.to_string(),
+            len: "-".to_string(),
+        }
+    }
+
+    #[test]
+    fn kolom_teks_memuat_angka_diurutkan_sebagai_teks() {
+        // Regresi: dulu "B1" dianggap lebih kecil dari "A2" karena dibandingkan angka.
+        let cols = vec![kolom("nama", "text")];
+        assert!(!kolom_numerik(&cols, "nama"));
+        let a = json!({"nama": "A2"});
+        let b = json!({"nama": "B1"});
+        assert_eq!(
+            banding_urut(&a, &b, "nama", false, "asc"),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            banding_urut(&a, &b, "nama", false, "desc"),
+            std::cmp::Ordering::Greater
+        );
+    }
+
+    #[test]
+    fn kolom_angka_diurutkan_sebagai_angka() {
+        let cols = vec![kolom("rph_aset", "int")];
+        assert!(kolom_numerik(&cols, "rph_aset"));
+        let a = json!({"rph_aset": 90});
+        let b = json!({"rph_aset": 100});
+        // Sebagai angka 90 < 100; secara teks justru sebaliknya.
+        assert_eq!(
+            banding_urut(&a, &b, "rph_aset", true, "asc"),
+            std::cmp::Ordering::Less
+        );
+    }
+
+    #[test]
+    fn kolom_tidak_dikenal_dianggap_teks() {
+        let cols = vec![kolom("nama", "text")];
+        assert!(!kolom_numerik(&cols, "tidak_ada"));
+    }
 }
