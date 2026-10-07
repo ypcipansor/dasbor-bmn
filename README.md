@@ -56,9 +56,15 @@ cargo leptos build --release        # build produksi ke target/site
 Tanpa `cargo leptos` (mis. di lingkungan yang hanya punya Cargo + `wasm-bindgen`):
 
 ```bash
-scripts/build.sh                    # bangun WASM hidrasi + biner SSR ke target/
+scripts/build.sh                    # bangun CSS + WASM hidrasi + biner SSR
 scripts/serve.sh                    # jalankan biner dan jaga tetap hidup
 ```
+
+`scripts/build.sh` memerlukan `cargo`, `wasm-bindgen`, `rustup`, dan Tailwind CSS
+v4 (CLI standalone `tailwindcss`, atau `npx` sebagai cadangan). Skrip ini
+menghasilkan `target/site/pkg/dasbor-bmn.css` lebih dulu lalu berhenti dengan
+galat bila pembuatannya gagal, sehingga checkout bersih tidak pernah tersaji
+tanpa gaya.
 
 > **Penting.** Hidrasi mencocokkan pohon view di WASM dengan HTML yang dikirim
 > server. Bila WASM tertinggal dari `src/`, penanda hidrasi bergeser dan peramban
