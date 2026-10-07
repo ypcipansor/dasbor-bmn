@@ -83,7 +83,10 @@ wasm-bindgen --target web --out-dir "$PKG" --out-name "$OUTPUT_NAME" "$WASM_ARTI
 # dipakai supaya tidak menggandakan berkas puluhan MB.
 WASM_BG="$PKG/${OUTPUT_NAME}_bg.wasm"
 WASM_HTML="$PKG/${OUTPUT_NAME}.wasm"
-ln -f "$WASM_BG" "$WASM_HTML" 2>/dev/null || cp -f "$WASM_BG" "$WASM_HTML"
+# Hapus dulu: bila keduanya sudah saling ter-link, `ln`/`cp` menolak berkas yang
+# sama dan henti `set -e` akan mematikan build ulang.
+rm -f "$WASM_HTML"
+ln "$WASM_BG" "$WASM_HTML" 2>/dev/null || cp "$WASM_BG" "$WASM_HTML"
 
 if ! cmp -s "$WASM_BG" "$WASM_HTML"; then
   echo "GAGAL: $WASM_HTML tidak identik dengan $WASM_BG; hidrasi akan gagal." >&2
