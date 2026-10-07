@@ -81,8 +81,8 @@ fn alamat_lokal(ip: &IpAddr) -> bool {
 /// boleh menjadi satu-satunya pengaman: tanpa gerbang ini, banyak permintaan
 /// paralel sama-sama memeriksa kata sandi sebelum ada yang tertunda, sehingga
 /// laju tebak-tebakan lolos dari penundaan (CWE-307). Hanya satu permintaan
-/// yang boleh memeriksa kata sandi pada satu waktu; antrean yang menumpuk
-/// membatasi percobaan serentak tanpa perlu menghitung token.
+/// yang boleh **menunggu** di sini; percobaan yang salah menahan izin selama
+/// penundaannya, sedangkan kata sandi yang benar tidak pernah menunggu.
 static GERBANG_VERIFIKASI: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
 
 fn gerbang_verifikasi() -> &'static tokio::sync::Semaphore {
@@ -97,24 +97,26 @@ enum Hasil {
     Salah,
 }
 
-/// Verifikasi satu percobaan masuk secara berurutan.
+/// Verifikasi satu percobaan masuk.
 ///
-/// Verifikasi dan penghitungan percobaan dilakukan di dalam izin gerbang,
-/// sehingga percobaan paralel tidak dapat menyelinap di antara pemeriksaan dan
-/// penundaan. Penundaan dipegang selama izin agar laju percobaan benar-benar
-/// dibatasi. Sebaliknya, kata sandi yang benar tidak ditunda sama sekali.
+/// Pemeriksaan kata sandi dilakukan lebih dulu **di luar** gerbang, sehingga
+/// operator yang mengirim kata sandi benar tidak pernah menunggu di belakang
+/// antrean percobaan salah (CWE-400). Hanya percobaan yang salah yang mengambil
+/// izin gerbang, lalu menghitung percobaan dan menahan izin selama penundaan;
+/// dengan begitu percobaan serentak tetap diserialkan dan tidak dapat
+/// menyelinap sebelum penundaan berlaku (CWE-307).
 async fn verifikasi(password: &str, kunci: &str) -> Hasil {
+    if cocok(password) {
+        hapus_percobaan(kunci);
+        return Hasil::Sukses(buat_sesi());
+    }
     let _izin = gerbang_verifikasi()
         .acquire()
         .await
         .expect("gerbang tertutup");
-    if !cocok(password) {
-        let n = catat_gagal_global().max(catat_gagal(kunci));
-        tokio::time::sleep(tunda_percobaan(n)).await;
-        return Hasil::Salah;
-    }
-    hapus_percobaan(kunci);
-    Hasil::Sukses(buat_sesi())
+    let n = catat_gagal_global().max(catat_gagal(kunci));
+    tokio::time::sleep(tunda_percobaan(n)).await;
+    Hasil::Salah
 }
 
 /// Kunci pembatasan: alamat TCP peer yang sebenarnya.
@@ -562,6 +564,17 @@ mod tests {
             .unwrap_or_else(|e| e.into_inner())
     }
 
+    /// Kata sandi tetap untuk uji agar tidak membaca/menulis `data/` pengembangan.
+    ///
+    /// Harus dipanggil sebelum uji mana pun menyentuh `cocok`/`verifikasi`.
+    fn kata_sandi_uji() -> &'static str {
+        static P: OnceLock<String> = OnceLock::new();
+        P.get_or_init(|| {
+            std::env::set_var("DASBOR_PASSWORD", "sandi-uji-benar");
+            password().to_string()
+        })
+    }
+
     #[test]
     fn perbandingan_konstan_benar() {
         assert!(sama_konstan("rahasia", "rahasia"));
@@ -648,6 +661,30 @@ mod tests {
             "percobaan paralel tidak diserialkan: {:?}",
             mulai.elapsed()
         );
+    }
+
+    /// Kata sandi benar harus lolos walaupun antrean percobaan salah menumpuk.
+    ///
+    /// Penundaan percobaan salah tidak boleh menahan operator (CWE-400): jalur
+    /// kata sandi benar tidak mengambil izin gerbang sama sekali.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn kata_sandi_benar_tidak_terhalang_antrean() {
+        let _k = kunci_uji();
+        let benar = kata_sandi_uji();
+        *global().lock().unwrap() = (0, Instant::now() + JENDELA_PERCOBAAN);
+        // Percobaan salah yang panjang menahan izin gerbang.
+        let penyerang = tokio::spawn(verifikasi("salah", "uji-antre"));
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        // Operator mengirim kata sandi benar di tengah penundaan penyerang.
+        let mulai = Instant::now();
+        let hasil = verifikasi(benar, "uji-operator").await;
+        let tunggu = mulai.elapsed();
+        assert!(matches!(hasil, Hasil::Sukses(_)));
+        assert!(
+            tunggu < Duration::from_millis(TUNDA_DASAR_MS),
+            "operator terhalang antrean: {tunggu:?}"
+        );
+        let _ = penyerang.await;
     }
 
     #[test]
