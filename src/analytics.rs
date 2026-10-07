@@ -339,6 +339,30 @@ mod tests {
     }
 
     #[test]
+    fn lima_belas_tabel_wilayah_sama_menjadi_satu() {
+        // Contoh temuan: lima belas tabel demo memuat himpunan 18 provinsi yang
+        // sama; penjumlahan per tabel dulu memberi 270, bukan 18.
+        let provinsi: Vec<String> = (0..18).map(|i| format!("PROV-{i}")).collect();
+        let satker: Vec<String> = (0..25).map(|i| format!("SAT-{i}")).collect();
+        let parts: Vec<_> = (0..15)
+            .map(|i| {
+                let mut s = aggregate(&[baris("PROV-0", "SAT-0")]);
+                s.provinsi_nama = provinsi.clone();
+                s.satker_nama = satker.clone();
+                (
+                    format!("Kategori-{i}"),
+                    "🗂️".to_string(),
+                    "1 MB".to_string(),
+                    s,
+                )
+            })
+            .collect();
+        let o = merge(&parts, true);
+        assert_eq!(o.total_provinsi, 18, "bukan 15 x 18 = 270");
+        assert_eq!(o.total_satker, 25);
+    }
+
+    #[test]
     fn nama_terpotong_dari_bucket_tetap_dihitung() {
         // Daftar bucket tampilan dibatasi; daftar nama lengkap harus tetap utuh.
         let mut b = aggregate(&[baris("PROV-A", "SAT-A")]);
@@ -349,5 +373,22 @@ mod tests {
         let o = merge(&parts, false);
         assert_eq!(o.total_provinsi, 60);
         assert_eq!(o.total_satker, 40);
+    }
+
+    #[test]
+    fn stats_lama_tanpa_daftar_nama_tetap_digabung() {
+        // Cache lama (sebelum `provinsi_nama` ada) tidak boleh gagal dibaca:
+        // `#[serde(default)]` mengisi daftar kosong, dan `merge` mundur ke bucket.
+        let json = r#"{"row_count":3,"nilai":300.0,"susut":30.0,"idle":0,"hilang":0,
+            "rusak":0,"kondisi":[],"provinsi":[{"name":"ACEH","jumlah":2,"nilai":200.0}],
+            "satker":[{"name":"Kejati Aceh","jumlah":2,"nilai":200.0}],"sumber_dana":[],
+            "perolehan":[]}"#;
+        let s: TableStats = serde_json::from_str(json).expect("stats lama tetap terbaca");
+        assert!(s.provinsi_nama.is_empty());
+        assert!(s.satker_nama.is_empty());
+        let parts = vec![("Tanah".to_string(), "🗺️".to_string(), "1 MB".to_string(), s)];
+        let o = merge(&parts, false);
+        assert_eq!(o.total_provinsi, 1);
+        assert_eq!(o.total_satker, 1);
     }
 }

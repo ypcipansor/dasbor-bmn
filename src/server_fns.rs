@@ -463,4 +463,53 @@ mod tests {
         crate::store::alir_baris(t, |_| n += 1).unwrap();
         assert_eq!(n, 25, "seluruh baris terbaca dalam sekali alir");
     }
+
+    /// Regresi: sinkronisasi yang mengganti tabel di tengah ekspor tidak boleh
+    /// membuat hasil ekspor berubah di tengah jalan.
+    ///
+    /// Karena seluruh baris berasal dari satu kueri berurutan stabil, penulis
+    /// yang menunggu kunci tidak dapat menyisipkan versi data baru di antara
+    /// baris. Snapshot pertama harus tetap utuh sampai selesai.
+    #[test]
+    fn penggantian_tabel_di_tengah_ekspor_tidak_mengubah_snapshot() {
+        let _kunci = crate::store::uji_kunci();
+        crate::store::uji_isolasi();
+        crate::store::conn();
+        let t = "UJI_EKSPOR_GANTI";
+        let lama: Vec<serde_json::Value> = (0..1000)
+            .map(|i| serde_json::json!({"kd_brg": format!("L{i}")}))
+            .collect();
+        let baru: Vec<serde_json::Value> = (0..10)
+            .map(|i| serde_json::json!({"kd_brg": format!("B{i}")}))
+            .collect();
+        let stats = crate::analytics::aggregate(&lama);
+        crate::store::replace_table(t, &lama, &stats, "t0").unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let penulis = std::thread::spawn(move || {
+            // Mulai setelah aliran pembaca sudah berjalan.
+            let _ = rx.recv();
+            let stats = crate::analytics::aggregate(&baru);
+            crate::store::replace_table(t, &baru, &stats, "t1").unwrap();
+        });
+
+        let mut terlihat = 0usize;
+        crate::store::alir_baris(t, |v| {
+            if terlihat == 0 {
+                // Pembaca sudah memegang snapshot; izinkan penulis menyerobot.
+                let _ = tx.send(());
+                std::thread::sleep(std::time::Duration::from_millis(150));
+            }
+            assert!(
+                v.get("kd_brg")
+                    .and_then(|x| x.as_str())
+                    .is_some_and(|s| s.starts_with('L')),
+                "baris versi baru menyusup ke snapshot ekspor"
+            );
+            terlihat += 1;
+        })
+        .unwrap();
+        penulis.join().unwrap();
+        assert_eq!(terlihat, 1000, "seluruh snapshot lama terbaca utuh");
+    }
 }
