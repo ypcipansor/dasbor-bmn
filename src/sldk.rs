@@ -156,6 +156,15 @@ pub async fn row_count(table: &str) -> Result<i64, SldkError> {
     parse_row_count(&body)
 }
 
+/// Apakah teks dari gateway menandakan sumber data kosong secara eksplisit.
+///
+/// Dipakai bersama oleh pembacaan jumlah baris dan penafsiran baris agar kedua
+/// jalur memperlakukan penanda yang sama dengan cara yang sama.
+fn penanda_kosong(teks: &str) -> bool {
+    let t = teks.trim();
+    t.eq_ignore_ascii_case("tidak ada data") || t.eq_ignore_ascii_case("no data")
+}
+
 /// Baca jumlah baris dari balasan `getRowCount`.
 ///
 /// Menerima beberapa bentuk balasan yang dikenal gateway: `results` berupa array
@@ -190,6 +199,15 @@ fn parse_row_count(body: &Value) -> Result<i64, SldkError> {
     // Bentuk ringkas: {"results":12} — angka langsung pada `results`.
     if let Some(n) = body.get("results").and_then(angka) {
         return Ok(n);
+    }
+
+    // Penanda kosong eksplisit: {"results":"Tidak Ada Data"} berarti nol baris,
+    // bukan format tak dikenal. Tanpa ini, tabel yang belum berisi apa pun gagal
+    // disinkronkan padahal gateway sudah menyatakan datanya kosong.
+    if let Some(s) = body.get("results").and_then(|r| r.as_str()) {
+        if penanda_kosong(s) {
+            return Ok(0);
+        }
     }
 
     let candidates = [
@@ -290,7 +308,7 @@ pub fn extract_rows(body: &Value) -> Beberapa {
             }
             Value::String(s) => {
                 let t = s.trim();
-                if t.eq_ignore_ascii_case("tidak ada data") || t.eq_ignore_ascii_case("no data") {
+                if penanda_kosong(t) {
                     return Ok(vec![]);
                 }
                 if t.is_empty() {
@@ -398,6 +416,17 @@ mod tests {
         assert!(parse_row_count(&body).is_err());
         // Array polos tanpa field jumlah juga bukan nol yang sah.
         assert!(parse_row_count(&json!({"results": [{"SKEMA": "DJKN"}]})).is_err());
+    }
+
+    #[test]
+    fn tidak_ada_data_berarti_nol() {
+        // Regresi: gateway menjawab {"results":"Tidak Ada Data"} untuk tabel yang
+        // belum punya baris. Dulu ini dianggap format tak dikenal sehingga
+        // sinkronisasi tabel tersebut gagal total, padahal artinya nol baris.
+        assert_eq!(parse_row_count(&json!({"results": "Tidak Ada Data"})).unwrap(), 0);
+        assert_eq!(parse_row_count(&json!({"results": "tidak ada data"})).unwrap(), 0);
+        assert_eq!(parse_row_count(&json!({"results": "No Data"})).unwrap(), 0);
+        assert_eq!(parse_row_count(&json!({"results": "  Tidak Ada Data  "})).unwrap(), 0);
     }
 
     use super::{extract_rows, Beberapa};

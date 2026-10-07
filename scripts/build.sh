@@ -26,6 +26,13 @@ PKG="$SITE_ROOT/$PKG_DIR"
 WASM_TARGET_DIR="target/front"
 WASM_ARTIFACT="$WASM_TARGET_DIR/wasm32-unknown-unknown/debug/dasbor_bmn.wasm"
 
+# Biner SSR wajib mendarat di target/debug karena dari situlah scripts/serve.sh
+# menjalankannya. Nilai ini dipaksa, bukan diwarisi: bila CARGO_TARGET_DIR di
+# lingkungan sudah terisi (mis. target/front untuk WASM), biner akan tertulis di
+# tempat lain dan serve.sh diam-diam menjalankan biner basi — sumber perubahan yang
+# tidak pernah ikut terpakai.
+HOST_TARGET_DIR="target"
+
 need() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "Alat '$1' tidak ditemukan. Pasang lebih dulu." >&2
@@ -69,7 +76,26 @@ CARGO_TARGET_DIR="$WASM_TARGET_DIR" cargo build \
 echo "==> 3/4 Hasilkan glue JS + WASM lewat wasm-bindgen"
 wasm-bindgen --target web --out-dir "$PKG" --out-name "$OUTPUT_NAME" "$WASM_ARTIFACT"
 
-echo "==> 4/4 Bangun biner SSR"
-cargo build --no-default-features --features ssr
+# Nama berkas WASM yang diminta HTML ditentukan Leptos saat biner SSR dikompilasi:
+# akhiran "_bg" hanya dipakai bila LEPTOS_OUTPUT_NAME tidak diset waktu itu
+# (leptos/src/hydration/mod.rs). Karena nilai itu bisa terisi di lingkungan,
+# sediakan KEDUA nama agar HTML selalu menemukan berkas yang benar. Hard link
+# dipakai supaya tidak menggandakan berkas puluhan MB.
+WASM_BG="$PKG/${OUTPUT_NAME}_bg.wasm"
+WASM_HTML="$PKG/${OUTPUT_NAME}.wasm"
+ln -f "$WASM_BG" "$WASM_HTML" 2>/dev/null || cp -f "$WASM_BG" "$WASM_HTML"
 
-echo "Selesai. Aset di $PKG, biner di target/debug/dasbor-bmn."
+if ! cmp -s "$WASM_BG" "$WASM_HTML"; then
+  echo "GAGAL: $WASM_HTML tidak identik dengan $WASM_BG; hidrasi akan gagal." >&2
+  exit 1
+fi
+
+echo "==> 4/4 Bangun biner SSR -> $HOST_TARGET_DIR/debug/dasbor-bmn"
+CARGO_TARGET_DIR="$HOST_TARGET_DIR" cargo build --no-default-features --features ssr
+
+if [ ! -x "$HOST_TARGET_DIR/debug/dasbor-bmn" ]; then
+  echo "GAGAL: biner SSR tidak ada di $HOST_TARGET_DIR/debug/dasbor-bmn" >&2
+  exit 1
+fi
+
+echo "Selesai. Aset di $PKG, biner di $HOST_TARGET_DIR/debug/dasbor-bmn."
