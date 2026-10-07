@@ -470,6 +470,11 @@ mod tests {
     /// Karena seluruh baris berasal dari satu kueri berurutan stabil, penulis
     /// yang menunggu kunci tidak dapat menyisipkan versi data baru di antara
     /// baris. Snapshot pertama harus tetap utuh sampai selesai.
+    ///
+    /// Overlap dijamin lewat handshake, bukan lewat `sleep`: pembaca memberi
+    /// tahu penulis, lalu **menunggu penulis benar-benar selesai** mengganti
+    /// tabel sambil snapshot pembaca masih terbuka. Dengan begitu penggantian
+    /// pasti tumpang tindih dengan aliran, apa pun penjadwalannya.
     #[test]
     fn penggantian_tabel_di_tengah_ekspor_tidak_mengubah_snapshot() {
         let _kunci = crate::store::uji_kunci();
@@ -485,20 +490,25 @@ mod tests {
         let stats = crate::analytics::aggregate(&lama);
         crate::store::replace_table(t, &lama, &stats, "t0").unwrap();
 
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let (mulai_tulis, tunggu_mulai) = std::sync::mpsc::channel::<()>();
+        let (tulis_selesai, tunggu_selesai) = std::sync::mpsc::channel::<()>();
         let penulis = std::thread::spawn(move || {
-            // Mulai setelah aliran pembaca sudah berjalan.
-            let _ = rx.recv();
+            let _ = tunggu_mulai.recv();
             let stats = crate::analytics::aggregate(&baru);
             crate::store::replace_table(t, &baru, &stats, "t1").unwrap();
+            let _ = tulis_selesai.send(());
         });
 
         let mut terlihat = 0usize;
         crate::store::alir_baris(t, |v| {
             if terlihat == 0 {
-                // Pembaca sudah memegang snapshot; izinkan penulis menyerobot.
-                let _ = tx.send(());
-                std::thread::sleep(std::time::Duration::from_millis(150));
+                // Beri tahu penulis, lalu tunggu ia selesai mengganti tabel.
+                // Pembaca masih berada di dalam `alir_baris`, jadi snapshot-nya
+                // tetap terbuka selama penggantian — overlap dijamin.
+                let _ = mulai_tulis.send(());
+                tunggu_selesai
+                    .recv_timeout(std::time::Duration::from_secs(10))
+                    .expect("penulis tidak menyelesaikan penggantian");
             }
             assert!(
                 v.get("kd_brg")
@@ -511,5 +521,11 @@ mod tests {
         .unwrap();
         penulis.join().unwrap();
         assert_eq!(terlihat, 1000, "seluruh snapshot lama terbaca utuh");
+        // Pastikan penggantian benar-benar terjadi, bukan uji yang lolos kosong.
+        assert_eq!(
+            crate::store::stored_count(t),
+            10,
+            "tabel memang sudah diganti ke versi baru"
+        );
     }
 }
