@@ -75,6 +75,48 @@ fn alamat_lokal(ip: &IpAddr) -> bool {
     }
 }
 
+/// Gerbang satu-slot untuk verifikasi kata sandi.
+///
+/// Pemeriksaan kata sandi memakan waktu, dan penundaan percobaan salah tidak
+/// boleh menjadi satu-satunya pengaman: tanpa gerbang ini, banyak permintaan
+/// paralel sama-sama memeriksa kata sandi sebelum ada yang tertunda, sehingga
+/// laju tebak-tebakan lolos dari penundaan (CWE-307). Hanya satu permintaan
+/// yang boleh memeriksa kata sandi pada satu waktu; antrean yang menumpuk
+/// membatasi percobaan serentak tanpa perlu menghitung token.
+static GERBANG_VERIFIKASI: OnceLock<tokio::sync::Semaphore> = OnceLock::new();
+
+fn gerbang_verifikasi() -> &'static tokio::sync::Semaphore {
+    GERBANG_VERIFIKASI.get_or_init(|| tokio::sync::Semaphore::new(1))
+}
+
+/// Hasil satu percobaan masuk.
+enum Hasil {
+    /// Kata sandi benar dan sesi baru dibuat.
+    Sukses(String),
+    /// Kata sandi salah; verifikasi sudah ditunda sesuai jumlah percobaan.
+    Salah,
+}
+
+/// Verifikasi satu percobaan masuk secara berurutan.
+///
+/// Verifikasi dan penghitungan percobaan dilakukan di dalam izin gerbang,
+/// sehingga percobaan paralel tidak dapat menyelinap di antara pemeriksaan dan
+/// penundaan. Penundaan dipegang selama izin agar laju percobaan benar-benar
+/// dibatasi. Sebaliknya, kata sandi yang benar tidak ditunda sama sekali.
+async fn verifikasi(password: &str, kunci: &str) -> Hasil {
+    let _izin = gerbang_verifikasi()
+        .acquire()
+        .await
+        .expect("gerbang tertutup");
+    if !cocok(password) {
+        let n = catat_gagal_global().max(catat_gagal(kunci));
+        tokio::time::sleep(tunda_percobaan(n)).await;
+        return Hasil::Salah;
+    }
+    hapus_percobaan(kunci);
+    Hasil::Sukses(buat_sesi())
+}
+
 /// Kunci pembatasan: alamat TCP peer yang sebenarnya.
 ///
 /// Header seperti `X-Forwarded-For` **tidak** dipakai karena datang dari klien
@@ -473,17 +515,14 @@ pub async fn login(req: Request) -> Response {
         Ok(f) => f,
         Err(_) => return halaman_galat("Permintaan tidak terbaca."),
     };
-    if !cocok(&form.password) {
-        // Percobaan salah dihitung per alamat dan global, lalu ditunda makin
-        // lama. Kata sandi yang benar tidak pernah ditunda, jadi operator tidak
-        // dapat dikunci oleh percobaan orang lain.
-        let n = catat_gagal_global().max(catat_gagal(&kunci));
-        tokio::time::sleep(tunda_percobaan(n)).await;
-        return halaman_galat("Kata sandi salah.");
+    // Verifikasi dan penghitungan percobaan berbagi satu gerbang, sehingga
+    // permintaan paralel tidak dapat memeriksa kata sandi bersamaan sebelum
+    // penundaan berlaku (CWE-307). Kata sandi yang benar tidak pernah ditunda,
+    // jadi operator tidak dapat dikunci oleh percobaan orang lain.
+    match verifikasi(&form.password, &kunci).await {
+        Hasil::Sukses(token) => redirect_ke("/", Some(header_cookie(&token, https))),
+        Hasil::Salah => halaman_galat("Kata sandi salah."),
     }
-    hapus_percobaan(&kunci);
-    let token = buat_sesi();
-    redirect_ke("/", Some(header_cookie(&token, https)))
 }
 
 /// `POST /api/logout` — akhiri sesi.
@@ -510,6 +549,18 @@ fn halaman_galat(pesan: &str) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Serialkan uji yang menyentuh penghitung percobaan bersama.
+    ///
+    /// Penghitung global dan per alamat bersifat proses-wide; tanpa kunci ini,
+    /// `hapus_percobaan` pada uji lain dapat mengosongkannya di tengah uji dan
+    /// membuat hasilnya bergantung waktu.
+    fn kunci_uji() -> std::sync::MutexGuard<'static, ()> {
+        static K: OnceLock<Mutex<()>> = OnceLock::new();
+        K.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
 
     #[test]
     fn perbandingan_konstan_benar() {
@@ -541,6 +592,7 @@ mod tests {
 
     #[test]
     fn pembatasan_percobaan_menaikkan_penundaan() {
+        let _k = kunci_uji();
         let kunci = "uji-pembatas";
         hapus_percobaan(kunci);
         for i in 1..=MAKS_PERCOBAAN {
@@ -561,6 +613,7 @@ mod tests {
 
     #[test]
     fn batas_global_menghitung_walau_alamat_berbeda() {
+        let _k = kunci_uji();
         // Kosongkan penghitung global lebih dulu.
         *global().lock().unwrap() = (0, Instant::now() + JENDELA_PERCOBAAN);
         assert_eq!(catat_gagal_global(), 1);
@@ -573,6 +626,28 @@ mod tests {
         // Masuk yang sah mengosongkan penghitung.
         hapus_percobaan("alamat-apa-saja");
         assert_eq!(catat_gagal_global(), 1);
+    }
+
+    /// Verifikasi paralel harus tetap berurutan: laju percobaan salah dibatasi
+    /// oleh gerbang, sehingga percobaan serentak tidak dapat menyelinap.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 3)]
+    async fn verifikasi_paralel_tetap_dibatasi() {
+        let _k = kunci_uji();
+        *global().lock().unwrap() = (0, Instant::now() + JENDELA_PERCOBAAN);
+        let mulai = Instant::now();
+        let tugas: Vec<_> = (0..3)
+            .map(|_| tokio::spawn(verifikasi("salah", "uji-paralel")))
+            .collect();
+        for t in tugas {
+            assert!(matches!(t.await.unwrap(), Hasil::Salah));
+        }
+        // Tiga penundaan berturut-turut (3 x 0,3 detik) minimal ~0,9 detik bila
+        // benar-benar diserialkan; tanpa gerbang hasilnya jauh lebih kecil.
+        assert!(
+            mulai.elapsed() >= Duration::from_millis(900),
+            "percobaan paralel tidak diserialkan: {:?}",
+            mulai.elapsed()
+        );
     }
 
     #[test]

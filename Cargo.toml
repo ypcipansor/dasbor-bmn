@@ -17,7 +17,7 @@ serde_json = "1"
 
 leptos_axum = { version = "0.8", optional = true }
 axum = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "fs"], optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal", "fs", "sync"], optional = true }
 tower = { version = "0.5", optional = true }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"], optional = true }
 rusqlite = { version = "0.37", features = ["bundled"], optional = true }
