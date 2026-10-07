@@ -53,6 +53,20 @@ cargo leptos watch                  # pengembangan di http://127.0.0.1:3000
 cargo leptos build --release        # build produksi ke target/site
 ```
 
+Tanpa `cargo leptos` (mis. di lingkungan yang hanya punya Cargo + `wasm-bindgen`):
+
+```bash
+scripts/build.sh                    # bangun WASM hidrasi + biner SSR ke target/
+scripts/serve.sh                    # jalankan biner dan jaga tetap hidup
+```
+
+> **Penting.** Hidrasi mencocokkan pohon view di WASM dengan HTML yang dikirim
+> server. Bila WASM tertinggal dari `src/`, penanda hidrasi bergeser dan peramban
+> gagal dengan galat "expected a marker node" — seluruh tombol jadi tidak
+> merespons. Karena itu `scripts/build.sh` wajib dijalankan setiap kali `src/`
+> berubah, dan berkas WASM harus dihasilkan lewat `wasm-bindgen` (bukan disalin
+> dari `target/front/.../dasbor_bmn.wasm`) agar glue JS menunjuk `*_bg.wasm`.
+
 ### Konfigurasi
 
 Nilai dibaca dari environment, dan dapat juga diisi lewat halaman **Pengaturan**

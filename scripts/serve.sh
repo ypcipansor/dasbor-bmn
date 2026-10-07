@@ -13,6 +13,10 @@ PIDFILE="${DASBOR_PIDFILE:-/tmp/dasbor-bmn.pid}"
 export LEPTOS_SITE_ROOT="${LEPTOS_SITE_ROOT:-target/site}"
 export LEPTOS_SITE_ADDR="0.0.0.0:$PORT"
 export LEPTOS_SITE_PKG_DIR="${LEPTOS_SITE_PKG_DIR:-pkg}"
+# Wajib diisi saat biner dijalankan langsung (tanpa `cargo leptos`). Tanpa ini,
+# `get_configuration` menghasilkan output-name kosong sehingga HTML memuat
+# "/pkg/.js" (404), hidrasi gagal, dan seluruh tombol tidak merespons.
+export LEPTOS_OUTPUT_NAME="${LEPTOS_OUTPUT_NAME:-dasbor-bmn}"
 
 cd "$ROOT" || exit 1
 
