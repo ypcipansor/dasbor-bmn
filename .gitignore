@@ -1,0 +1,26 @@
+# Build Rust
+/target
+**/*.rs.bk
+
+# Data lokal (cache SQLite + kredensial)
+/data
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+
+# Lingkungan
+.env
+.env.*
+!.env.example
+
+# Editor
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Aset hasil build Leptos
+/style/tailwind.css.bak
+
+# Memori agen (lokal)
+.openhands/

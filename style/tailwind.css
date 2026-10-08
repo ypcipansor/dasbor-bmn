@@ -1,0 +1,87 @@
+@import "tailwindcss";
+
+@source "../src";
+
+@theme {
+  --color-bmn-50: #eef4ff;
+  --color-bmn-100: #d9e6ff;
+  --color-bmn-200: #bcd3ff;
+  --color-bmn-300: #8eb5ff;
+  --color-bmn-400: #598dff;
+  --color-bmn-500: #3366ff;
+  --color-bmn-600: #1f47f5;
+  --color-bmn-700: #1a35e1;
+  --color-bmn-800: #1c2eb6;
+  --color-bmn-900: #1c2d8f;
+
+  --color-ink-50: #f6f7f9;
+  --color-ink-100: #eceef2;
+  --color-ink-200: #d5d9e2;
+  --color-ink-300: #b0b8c8;
+  --color-ink-400: #8592a8;
+  --color-ink-500: #66748d;
+  --color-ink-600: #515d74;
+  --color-ink-700: #424b5e;
+  --color-ink-800: #3a4150;
+  --color-ink-900: #1b1f28;
+  --color-ink-950: #0e1116;
+}
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-bmn-500);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-xl border border-ink-200/70 bg-white shadow-sm;
+  }
+  .dark .card {
+    @apply border-ink-800 bg-ink-900;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+      transition-colors disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+      transition-colors disabled:cursor-not-allowed disabled:opacity-50
+      bg-bmn-600 text-white hover:bg-bmn-700 active:bg-bmn-800;
+  }
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium
+      transition-colors disabled:cursor-not-allowed disabled:opacity-50
+      border border-ink-200 bg-white text-ink-700 hover:bg-ink-50;
+  }
+  .dark .btn-ghost {
+    @apply border-ink-700 bg-ink-900 text-ink-200 hover:bg-ink-800;
+  }
+  .input {
+    @apply w-full rounded-lg border border-ink-200 bg-white px-3 py-2 text-sm text-ink-900
+      placeholder:text-ink-400 focus:border-bmn-500 focus:outline-none;
+  }
+  .dark .input {
+    @apply border-ink-700 bg-ink-950 text-ink-100;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium;
+  }
+  .table-wrap {
+    @apply w-full overflow-x-auto;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+}

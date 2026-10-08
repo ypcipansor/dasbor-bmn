@@ -1,0 +1,487 @@
+//! Klien Web Service SLDK SIMAN v2 (Kejaksaan RI).
+//!
+//! Alur: token SSO Kemenkeu (client_credentials) → gateway KSB →
+//! resource `SLDKSimanKL/2.0/<resource>` dengan parameter `BA_KEY`, `ID_1`, `ID_2`.
+#![cfg(feature = "ssr")]
+
+use crate::config;
+use serde_json::Value;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+#[derive(Debug, thiserror::Error)]
+pub enum SldkError {
+    #[error("kredensial SLDK belum lengkap: {0}")]
+    NotConfigured(String),
+    #[error("gagal menghubungi SSO/gateway: {0}")]
+    Http(String),
+    #[error("respons tidak dikenali: {0}")]
+    BadResponse(String),
+    #[error("unduhan tidak lengkap: {0}")]
+    TidakLengkap(String),
+}
+
+impl SldkError {
+    pub fn user_message(&self) -> String {
+        match self {
+            SldkError::NotConfigured(m) => m.clone(),
+            SldkError::Http(m) => format!("Koneksi ke layanan gagal ({m})."),
+            SldkError::BadResponse(m) => format!("Format respons tidak dikenali ({m})."),
+            SldkError::TidakLengkap(m) => format!("Unduhan tidak lengkap: {m}"),
+        }
+    }
+}
+
+struct CachedToken {
+    token: String,
+    expires_at: Instant,
+    /// Sidik jari kredensial pembuat token; token tidak dipakai lagi bila berubah.
+    sidik: u64,
+}
+
+static TOKEN: OnceLock<Mutex<Option<CachedToken>>> = OnceLock::new();
+
+/// Sidik jari kredensial yang menentukan identitas token.
+fn sidik_kredensial(cfg: &config::Config) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    cfg.client_id.hash(&mut h);
+    cfg.client_secret.hash(&mut h);
+    cfg.grant_type.hash(&mut h);
+    cfg.token_url.hash(&mut h);
+    h.finish()
+}
+
+/// Buang token tersimpan; dipanggil saat kredensial berubah.
+pub fn lupakan_token() {
+    if let Some(lock) = TOKEN.get() {
+        *lock.lock().unwrap() = None;
+    }
+}
+
+fn http() -> &'static reqwest::Client {
+    static C: OnceLock<reqwest::Client> = OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(120))
+            .user_agent("dasbor-bmn/0.1")
+            .build()
+            .expect("klien HTTP")
+    })
+}
+
+/// Ambil token akses SSO, memakai cache selama masa berlakunya (1 jam).
+pub async fn token() -> Result<String, SldkError> {
+    let cfg = config::get();
+    if cfg.client_id.is_empty() || cfg.client_secret.is_empty() {
+        return Err(SldkError::NotConfigured(
+            "Client ID / Client Secret belum diisi.".to_string(),
+        ));
+    }
+    let sidik = sidik_kredensial(&cfg);
+    let lock = TOKEN.get_or_init(|| Mutex::new(None));
+    if let Some(t) = lock.lock().unwrap().as_ref() {
+        if t.sidik == sidik && t.expires_at > Instant::now() + Duration::from_secs(30) {
+            return Ok(t.token.clone());
+        }
+    }
+
+    let params = [
+        ("client_id", cfg.client_id.as_str()),
+        ("client_secret", cfg.client_secret.as_str()),
+        ("grant_type", cfg.grant_type.as_str()),
+    ];
+    let resp = http()
+        .post(&cfg.token_url)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| SldkError::Http(e.to_string()))?;
+    let status = resp.status();
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| SldkError::BadResponse(format!("{status}: {e}")))?;
+    let access = body
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .ok_or_else(|| {
+            let detail = body
+                .get("error_description")
+                .or_else(|| body.get("error"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("token tidak ditemukan");
+            SldkError::BadResponse(format!("{status}: {detail}"))
+        })?;
+    let expires_in = body
+        .get("expires_in")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(3600)
+        .max(60);
+    *lock.lock().unwrap() = Some(CachedToken {
+        token: access.to_string(),
+        expires_at: Instant::now() + Duration::from_secs(expires_in as u64),
+        sidik,
+    });
+    Ok(access.to_string())
+}
+
+/// Jumlah baris satu tabel pada rentang yang diberikan gateway.
+pub async fn row_count(table: &str) -> Result<i64, SldkError> {
+    let cfg = config::get();
+    if cfg.ba_key.is_empty() {
+        return Err(SldkError::NotConfigured("BA_KEY belum diisi.".to_string()));
+    }
+    let tok = token().await?;
+    let url = format!(
+        "{}/SLDKSimanKL/2.0/getRowCount/{}/{}",
+        cfg.gateway_root(),
+        cfg.ba_key,
+        table
+    );
+    let resp = http()
+        .get(&url)
+        .bearer_auth(tok)
+        .send()
+        .await
+        .map_err(|e| SldkError::Http(e.to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(SldkError::Http(format!("HTTP {status}")));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| SldkError::BadResponse(format!("{status}: {e}")))?;
+    parse_row_count(&body)
+}
+
+/// Apakah teks dari gateway menandakan sumber data kosong secara eksplisit.
+///
+/// Dipakai bersama oleh pembacaan jumlah baris dan penafsiran baris agar kedua
+/// jalur memperlakukan penanda yang sama dengan cara yang sama.
+fn penanda_kosong(teks: &str) -> bool {
+    let t = teks.trim();
+    t.eq_ignore_ascii_case("tidak ada data") || t.eq_ignore_ascii_case("no data")
+}
+
+/// Baca jumlah baris dari balasan `getRowCount`.
+///
+/// Menerima beberapa bentuk balasan yang dikenal gateway: `results` berupa array
+/// objek berisi field jumlah, `results` berupa angka/teks, serta field jumlah di
+/// tingkat atas. Balasan yang tidak memuat field jumlah dikembalikan sebagai
+/// galat, bukan nol: nol hanya boleh berasal dari field jumlah yang benar-benar
+/// bernilai nol, sehingga pesan galat berstatus 200 tidak menghapus cache tabel.
+fn parse_row_count(body: &Value) -> Result<i64, SldkError> {
+    fn angka(v: &Value) -> Option<i64> {
+        match v {
+            Value::Number(n) => n.as_i64(),
+            Value::String(s) => s.trim().parse::<i64>().ok(),
+            _ => None,
+        }
+    }
+    const KUNCI: [&str; 6] = ["RCOUNT", "rcount", "ROWCOUNT", "rowcount", "TOTAL", "total"];
+
+    // Bentuk nyata: {"results":[{"SKEMA":"DJKN","NAMATABEL":"...","RCOUNT":2186}]}
+    // Setiap elemen diperiksa, bukan hanya yang pertama.
+    if let Some(arr) = body.get("results").and_then(|r| r.as_array()) {
+        for el in arr {
+            for key in KUNCI {
+                if let Some(n) = el.get(key).and_then(angka) {
+                    return Ok(n);
+                }
+            }
+        }
+        // Array ada tetapi tak satu pun elemen memuat field jumlah.
+        return Err(SldkError::BadResponse(ringkas(body)));
+    }
+
+    // Bentuk ringkas: {"results":12} — angka langsung pada `results`.
+    if let Some(n) = body.get("results").and_then(angka) {
+        return Ok(n);
+    }
+
+    // Penanda kosong eksplisit: {"results":"Tidak Ada Data"} berarti nol baris,
+    // bukan format tak dikenal. Tanpa ini, tabel yang belum berisi apa pun gagal
+    // disinkronkan padahal gateway sudah menyatakan datanya kosong.
+    if let Some(s) = body.get("results").and_then(|r| r.as_str()) {
+        if penanda_kosong(s) {
+            return Ok(0);
+        }
+    }
+
+    let candidates = [
+        body.get("RCOUNT"),
+        body.get("rcount"),
+        body.get("total"),
+        body.get("count"),
+    ];
+    for c in candidates.into_iter().flatten() {
+        if let Some(n) = angka(c) {
+            return Ok(n);
+        }
+    }
+    Err(SldkError::BadResponse(ringkas(body)))
+}
+
+/// Ambil sekumpulan baris dari satu resource aset.
+///
+/// Mengembalikan `Ok(None)` hanya bila gateway secara eksplisit menyatakan tidak
+/// ada data. Balasan yang tidak dikenali menjadi `Err` supaya cache lama tidak
+/// tertimpa oleh unduhan yang gagal ditafsirkan.
+pub async fn fetch_rows(
+    resource: &str,
+    id1: i64,
+    id2: i64,
+) -> Result<Option<Vec<Value>>, SldkError> {
+    let cfg = config::get();
+    if cfg.ba_key.is_empty() {
+        return Err(SldkError::NotConfigured("BA_KEY belum diisi.".to_string()));
+    }
+    let tok = token().await?;
+    let url = format!("{}/SLDKSimanKL/2.0/{}", cfg.gateway_root(), resource);
+    let params = [
+        ("BA_KEY", cfg.ba_key.clone()),
+        ("ID_1", id1.to_string()),
+        ("ID_2", id2.to_string()),
+    ];
+    let resp = http()
+        .post(&url)
+        .bearer_auth(tok)
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| SldkError::Http(e.to_string()))?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(SldkError::Http(format!("HTTP {status}")));
+    }
+    let body: Value = resp
+        .json()
+        .await
+        .map_err(|e| SldkError::BadResponse(format!("{status}: {e}")))?;
+    match extract_rows(&body) {
+        Beberapa::Baris(rows) => Ok(Some(rows)),
+        Beberapa::Kosong => Ok(None),
+        Beberapa::TakDikenal(ringkas) => Err(SldkError::BadResponse(ringkas)),
+    }
+}
+
+/// Hasil penafsiran satu balasan gateway.
+pub enum Beberapa {
+    /// Ada baris data.
+    Baris(Vec<Value>),
+    /// Gateway menyatakan tidak ada data.
+    Kosong,
+    /// Bentuk balasan tidak dikenali (mis. pesan galat yang tetap berstatus 200).
+    TakDikenal(String),
+}
+
+/// Normalkan berbagai bentuk pembungkus respons menjadi array baris.
+pub fn extract_rows(body: &Value) -> Beberapa {
+    fn as_rows(v: &Value) -> Result<Vec<Value>, ()> {
+        match v {
+            Value::Array(a) => Ok(a.clone()),
+            Value::Object(o) => {
+                for key in ["results", "result", "data", "rows", "records", "items"] {
+                    if let Some(inner) = o.get(key) {
+                        if let Ok(rows) = as_rows(inner) {
+                            return Ok(rows);
+                        }
+                    }
+                }
+                // Objek yang memuat kunci galat tidak boleh dianggap baris.
+                if o.keys().any(|k| {
+                    matches!(
+                        k.to_ascii_lowercase().as_str(),
+                        "error" | "errors" | "error_description" | "message" | "fault"
+                    )
+                }) {
+                    return Err(());
+                }
+                // Objek tunggal dianggap satu baris bila punya banyak kunci data.
+                if o.len() > 3 {
+                    Ok(vec![v.clone()])
+                } else {
+                    Err(())
+                }
+            }
+            Value::String(s) => {
+                let t = s.trim();
+                if penanda_kosong(t) {
+                    return Ok(vec![]);
+                }
+                if t.is_empty() {
+                    return Ok(vec![]);
+                }
+                if let Ok(parsed) = serde_json::from_str::<Value>(t) {
+                    as_rows(&parsed)
+                } else {
+                    Err(())
+                }
+            }
+            _ => Err(()),
+        }
+    }
+    match as_rows(body) {
+        Ok(rows) if rows.is_empty() => Beberapa::Kosong,
+        Ok(rows) => Beberapa::Baris(rows),
+        Err(()) => Beberapa::TakDikenal(ringkas(body)),
+    }
+}
+
+/// Ringkas balasan untuk pesan galat (maksimum 120 karakter).
+fn ringkas(body: &Value) -> String {
+    let s = body.to_string();
+    let s = s.trim();
+    if s.chars().count() > 120 {
+        format!("{}…", s.chars().take(120).collect::<String>())
+    } else {
+        s.to_string()
+    }
+}
+
+/// Uji koneksi: token + hitung baris satu tabel.
+pub async fn health() -> Result<(bool, Option<String>), ()> {
+    match token().await {
+        Ok(_) => Ok((true, None)),
+        Err(e) => Ok((false, Some(e.user_message()))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_row_count;
+    use serde_json::json;
+
+    #[test]
+    fn membaca_rcount_dari_pembungkus_results() {
+        // Bentuk balasan nyata dari getRowCount.
+        let body = json!({
+            "results": [{
+                "SKEMA": "DJKN",
+                "NAMATABEL": "SIMAN2_M_ASET_TANAH",
+                "TANGGAL": "2026-10-04 15:00:32.2166667",
+                "RCOUNT": 2186
+            }]
+        });
+        assert_eq!(parse_row_count(&body).unwrap(), 2186);
+    }
+
+    #[test]
+    fn rcount_nol_tetap_dibaca_nol() {
+        let body = json!({"results": [{"RCOUNT": 0}]});
+        assert_eq!(parse_row_count(&body).unwrap(), 0);
+    }
+
+    #[test]
+    fn rcount_sebagai_teks() {
+        let body = json!({"results": [{"RCOUNT": "74429"}]});
+        assert_eq!(parse_row_count(&body).unwrap(), 74429);
+    }
+
+    #[test]
+    fn panjang_array_bukan_jumlah_baris() {
+        // Regresi: dulu panjang array (1) dipakai sebagai jumlah baris.
+        let body = json!({"results": [{"RCOUNT": 4264}, {"RCOUNT": 999}]});
+        assert_eq!(parse_row_count(&body).unwrap(), 4264);
+    }
+
+    #[test]
+    fn bentuk_cadangan_tetap_didukung() {
+        assert_eq!(parse_row_count(&json!({"total": 42})).unwrap(), 42);
+        assert_eq!(parse_row_count(&json!({"RCOUNT": 7})).unwrap(), 7);
+    }
+
+    #[test]
+    fn hasil_angka_pada_results_didukung() {
+        // Regresi: klien lama menerima {"results":12}; bentuk ini tidak boleh
+        // lagi ditolak karena memuat jumlah yang sah.
+        assert_eq!(parse_row_count(&json!({"results": 12})).unwrap(), 12);
+        assert_eq!(parse_row_count(&json!({"results": "12"})).unwrap(), 12);
+        assert_eq!(parse_row_count(&json!({"results": 0})).unwrap(), 0);
+    }
+
+    #[test]
+    fn elemen_kedua_array_tetap_dibaca() {
+        // Regresi: dulu hanya elemen pertama yang diperiksa.
+        let body = json!({"results": [{"SKEMA": "DJKN"}, {"NAMATABEL": "X", "RCOUNT": 314}]});
+        assert_eq!(parse_row_count(&body).unwrap(), 314);
+    }
+
+    #[test]
+    fn balasan_tak_dikenal_menjadi_galat() {
+        // Regresi: pesan galat berstatus 200 tidak boleh dianggap sumber kosong.
+        let body = json!({"error": "temporarily unavailable"});
+        assert!(parse_row_count(&body).is_err());
+        // Array polos tanpa field jumlah juga bukan nol yang sah.
+        assert!(parse_row_count(&json!({"results": [{"SKEMA": "DJKN"}]})).is_err());
+    }
+
+    #[test]
+    fn tidak_ada_data_berarti_nol() {
+        // Regresi: gateway menjawab {"results":"Tidak Ada Data"} untuk tabel yang
+        // belum punya baris. Dulu ini dianggap format tak dikenal sehingga
+        // sinkronisasi tabel tersebut gagal total, padahal artinya nol baris.
+        assert_eq!(
+            parse_row_count(&json!({"results": "Tidak Ada Data"})).unwrap(),
+            0
+        );
+        assert_eq!(
+            parse_row_count(&json!({"results": "tidak ada data"})).unwrap(),
+            0
+        );
+        assert_eq!(parse_row_count(&json!({"results": "No Data"})).unwrap(), 0);
+        assert_eq!(
+            parse_row_count(&json!({"results": "  Tidak Ada Data  "})).unwrap(),
+            0
+        );
+    }
+
+    use super::{extract_rows, Beberapa};
+
+    fn baris(body: serde_json::Value) -> Vec<serde_json::Value> {
+        match extract_rows(&body) {
+            Beberapa::Baris(r) => r,
+            _ => panic!("diharapkan baris"),
+        }
+    }
+
+    #[test]
+    fn array_langsung_menjadi_baris() {
+        let body = json!([{"nama": "A"}, {"nama": "B"}]);
+        assert_eq!(baris(body).len(), 2);
+    }
+
+    #[test]
+    fn pembungkus_results_dibaca() {
+        let body = json!({"results": [{"nama": "A"}]});
+        assert_eq!(baris(body).len(), 1);
+    }
+
+    #[test]
+    fn tidak_ada_data_menjadi_kosong() {
+        assert!(matches!(
+            extract_rows(&json!("Tidak ada data")),
+            Beberapa::Kosong
+        ));
+        assert!(matches!(extract_rows(&json!([])), Beberapa::Kosong));
+    }
+
+    #[test]
+    fn pesan_galat_tidak_dianggap_baris() {
+        // Balasan galat berstatus 200 tidak boleh menjadi satu baris palsu.
+        let body = json!({"error": "temporarily unavailable"});
+        assert!(matches!(extract_rows(&body), Beberapa::TakDikenal(_)));
+        let body = json!({"results": {"error_description": "token kedaluwarsa"}});
+        assert!(matches!(extract_rows(&body), Beberapa::TakDikenal(_)));
+    }
+
+    #[test]
+    fn teks_bukan_json_menjadi_tak_dikenal() {
+        assert!(matches!(
+            extract_rows(&json!("gateway sibuk")),
+            Beberapa::TakDikenal(_)
+        ));
+    }
+}
