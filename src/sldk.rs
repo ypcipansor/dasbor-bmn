@@ -423,10 +423,19 @@ mod tests {
         // Regresi: gateway menjawab {"results":"Tidak Ada Data"} untuk tabel yang
         // belum punya baris. Dulu ini dianggap format tak dikenal sehingga
         // sinkronisasi tabel tersebut gagal total, padahal artinya nol baris.
-        assert_eq!(parse_row_count(&json!({"results": "Tidak Ada Data"})).unwrap(), 0);
-        assert_eq!(parse_row_count(&json!({"results": "tidak ada data"})).unwrap(), 0);
+        assert_eq!(
+            parse_row_count(&json!({"results": "Tidak Ada Data"})).unwrap(),
+            0
+        );
+        assert_eq!(
+            parse_row_count(&json!({"results": "tidak ada data"})).unwrap(),
+            0
+        );
         assert_eq!(parse_row_count(&json!({"results": "No Data"})).unwrap(), 0);
-        assert_eq!(parse_row_count(&json!({"results": "  Tidak Ada Data  "})).unwrap(), 0);
+        assert_eq!(
+            parse_row_count(&json!({"results": "  Tidak Ada Data  "})).unwrap(),
+            0
+        );
     }
 
     use super::{extract_rows, Beberapa};

@@ -5,6 +5,7 @@ async fn main() {
     use axum::Router;
     use dasbor_bmn::app::{shell, App};
     use dasbor_bmn::auth;
+    use dasbor_bmn::report;
     use leptos::prelude::*;
     use leptos_axum::{generate_route_list, LeptosRoutes};
     use std::net::SocketAddr;
@@ -19,6 +20,10 @@ async fn main() {
     let app = Router::new()
         .route("/api/login", post(auth::login))
         .route("/api/logout", post(auth::logout))
+        .route(
+            "/api/laporan.pdf",
+            axum::routing::get(report::http::laporan_pdf),
+        )
         .leptos_routes(&leptos_options, routes, {
             let leptos_options = leptos_options.clone();
             move || shell(leptos_options.clone())

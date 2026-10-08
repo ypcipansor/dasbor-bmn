@@ -28,6 +28,12 @@ const NAV: &[NavItem] = &[
         desc: "KPI & analitik utama",
     },
     NavItem {
+        href: "/laporan",
+        label: "Laporan",
+        icon: "🧾",
+        desc: "Unduh laporan PDF",
+    },
+    NavItem {
         href: "/kategori",
         label: "Kategori Aset",
         icon: "🗂️",
@@ -274,6 +280,7 @@ fn set_web_theme(dark: bool) {
 
 fn title_for(path: &str) -> &'static str {
     match path {
+        "/laporan" => "Laporan Bulanan",
         "/kategori" => "Kategori Aset",
         "/data" => "Data Aset",
         "/sinkronisasi" => "Sinkronisasi Data",

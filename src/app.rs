@@ -8,6 +8,7 @@ use crate::pages::category::CategoryPage;
 use crate::pages::data::DataPage;
 use crate::pages::not_found::NotFound;
 use crate::pages::overview::OverviewPage;
+use crate::pages::report::ReportPage;
 use crate::pages::settings::SettingsPage;
 use crate::pages::sync::SyncPage;
 
@@ -48,6 +49,7 @@ pub fn App() -> impl IntoView {
             <AppShell>
                 <Routes fallback=|| view! { <NotFound/> }>
                     <Route path=path!("/") view=OverviewPage/>
+                    <Route path=path!("/laporan") view=ReportPage/>
                     <Route path=path!("/kategori") view=CategoryPage/>
                     <Route path=path!("/data") view=DataPage/>
                     <Route path=path!("/sinkronisasi") view=SyncPage/>

@@ -91,6 +91,17 @@ fn OverviewBody(data: Overview) -> impl IntoView {
     let _ = donut_legend;
 
     view! {
+        <div class="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <div>
+                <h1 class="text-lg font-semibold">"Ringkasan Dasbor"</h1>
+                <p class="text-xs text-ink-400">"KPI dan analitik utama Barang Milik Negara."</p>
+            </div>
+            <a class="btn-ghost" href="/laporan">
+                <span aria-hidden="true">"🧾"</span>
+                <span>"Laporan bulanan PDF"</span>
+            </a>
+        </div>
+
         <DataModeBanner is_demo=data.is_demo generated_at=data.generated_at.clone()/>
 
         <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">

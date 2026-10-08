@@ -8,6 +8,7 @@ pub mod demo;
 pub mod fs_aman;
 pub mod model;
 pub mod pages;
+pub mod report;
 pub mod schema;
 pub mod server_fns;
 pub mod sldk;
